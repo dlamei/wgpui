@@ -170,9 +170,7 @@ pub struct State {
     pub cached_nodes: FxHashMap<NodeId, Node>,
 }
 
-vertex_struct!(VertexRect {
+vertex_struct!(RectInst {
     top_left(0): Vec2,
     size(1): Vec2,
-    col(2): RGBA,
-    pos(3): RGBA,
 });

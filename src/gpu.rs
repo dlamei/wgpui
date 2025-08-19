@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{UUID, utils};
+use crate::{RenderTarget, UUID, utils};
 
 pub trait Vertex: Sized + Copy + bytemuck::Pod + bytemuck::Zeroable {
     const VERTEX_LABEL: &'static str;
@@ -264,6 +264,232 @@ impl_as_vertex_fmt! {
 
     utils::RGB: Float32x3: "vec3<f32>",
     utils::RGBA: Float32x4: "vec4<f32>",
+}
+
+pub struct Renderer {
+    pub framebuffer_msaa: Option<wgpu::TextureView>,
+    pub framebuffer_resolve: wgpu::TextureView,
+    pub depthbuffer: wgpu::TextureView,
+    pub active_surface: Option<wgpu::SurfaceTexture>,
+    pub wgpu: WGPU,
+}
+
+impl Renderer {
+    pub fn surface_target(&mut self) -> RenderTarget<'_> {
+        let Some(surface_texture) = &mut self.active_surface else {
+            log::error!("Renderer::prepare_frame must be called before calling this function");
+            panic!();
+        };
+
+        let surface_texture_view =
+            surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor {
+                    label: wgpu::Label::default(),
+                    aspect: wgpu::TextureAspect::default(),
+                    format: Some(self.wgpu.surface_format),
+                    dimension: None,
+                    base_mip_level: 0,
+                    mip_level_count: None,
+                    base_array_layer: 0,
+                    array_layer_count: None,
+                    usage: None,
+                });
+
+        let encoder = self
+            .wgpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("renderpass_encoder"),
+            });
+
+        RenderTarget {
+            target_view: surface_texture_view,
+            encoder: std::mem::ManuallyDrop::new(encoder),
+            wgpu: &self.wgpu,
+        }
+    }
+
+    pub fn prepare_frame(&mut self) -> Result<(), wgpu::SurfaceError> {
+        if self.active_surface.is_some() {
+            log::error!("Renderer::prepare_frame called with active surface!");
+            panic!();
+        }
+
+        let surface_texture = self.wgpu.surface.get_current_texture()?;
+
+        self.active_surface = Some(surface_texture);
+        Ok(())
+    }
+
+    pub fn present_frame(&mut self) {
+        if let Some(surface) = self.active_surface.take() {
+            surface.present();
+            self.active_surface = None;
+        }
+    }
+
+    pub async fn new_async(
+        window: impl Into<wgpu::SurfaceTarget<'static>>,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let wgpu = WGPU::new_async(window, width, height).await;
+
+        let framebuffer_msaa = Self::create_framebuffer_msaa_texture(&wgpu, width, height);
+        let framebuffer_resolve = Self::create_framebuffer_resolve_texture(&wgpu, width, height);
+        let depthbuffer = Self::create_depthbuffer(&wgpu, width, height);
+
+        Self {
+            framebuffer_msaa,
+            framebuffer_resolve,
+            depthbuffer,
+            active_surface: None,
+            wgpu,
+        }
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.wgpu.resize(width, height);
+        self.framebuffer_msaa = Self::create_framebuffer_msaa_texture(&self.wgpu, width, height);
+        self.framebuffer_resolve =
+            Self::create_framebuffer_resolve_texture(&self.wgpu, width, height);
+        self.depthbuffer = Self::create_depthbuffer(&self.wgpu, width, height);
+    }
+
+    pub fn create_framebuffer_resolve_texture(
+        wgpu: &WGPU,
+        width: u32,
+        height: u32,
+    ) -> wgpu::TextureView {
+        let width = width.max(1);
+        let height = height.max(1);
+        let texture = wgpu.device.create_texture(
+            &(wgpu::TextureDescriptor {
+                label: Some("Framebuffer Resolve Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu.surface_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }),
+        );
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            label: None,
+            format: Some(wgpu.surface_format),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            base_array_layer: 0,
+            array_layer_count: None,
+            mip_level_count: None,
+            usage: None,
+        })
+    }
+
+    pub fn depth_format() -> wgpu::TextureFormat {
+        wgpu::TextureFormat::Depth32Float
+    }
+
+    pub const fn use_multisample() -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return true;
+        #[cfg(target_arch = "wasm32")]
+        return false;
+    }
+
+    pub fn multisample_state() -> wgpu::MultisampleState {
+        if Self::use_multisample() {
+            wgpu::MultisampleState {
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+                count: 4,
+            }
+        } else {
+            Default::default()
+        }
+    }
+
+    pub fn create_framebuffer_msaa_texture(
+        wgpu: &WGPU,
+        width: u32,
+        height: u32,
+    ) -> Option<wgpu::TextureView> {
+        let width = width.max(1);
+        let height = height.max(1);
+        if !Self::use_multisample() {
+            return None;
+        }
+
+        let texture = wgpu.device.create_texture(
+            &(wgpu::TextureDescriptor {
+                label: Some("Framebuffer Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 4,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu.surface_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }),
+        );
+        Some(texture.create_view(&wgpu::TextureViewDescriptor {
+            label: None,
+            format: Some(wgpu.surface_format),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            base_array_layer: 0,
+            array_layer_count: None,
+            mip_level_count: None,
+            usage: None,
+        }))
+    }
+
+    pub fn create_depthbuffer(wgpu: &WGPU, width: u32, height: u32) -> wgpu::TextureView {
+        let width = width.max(1);
+        let height = height.max(1);
+        let texture = wgpu.device.create_texture(
+            &(wgpu::TextureDescriptor {
+                label: Some("Depth Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: if Self::use_multisample() { 4 } else { 1 },
+                dimension: wgpu::TextureDimension::D2,
+                format: Self::depth_format(),
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }),
+        );
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            label: None,
+            format: Some(Self::depth_format()),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            base_array_layer: 0,
+            array_layer_count: None,
+            mip_level_count: None,
+            usage: None,
+        })
+    }
 }
 
 #[derive(Debug)]
