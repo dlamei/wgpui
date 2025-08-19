@@ -1,118 +1,297 @@
 use std::{
     collections::HashMap,
+    fmt, hash,
     sync::{Arc, Mutex},
 };
 
-pub trait AsVertexFormat {
-    const FORMAT: wgpu::VertexFormat;
+use crate::{UUID, utils};
+
+pub trait Vertex: Sized + Copy + bytemuck::Pod + bytemuck::Zeroable {
+    const VERTEX_LABEL: &'static str;
+    const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute];
+    const VERTEX_MEMBERS: &'static [&'static str];
+
+    fn vertex_attributes_offset(offset: u32) -> Vec<wgpu::VertexAttribute> {
+        Self::VERTEX_ATTRIBUTES
+            .iter()
+            .copied()
+            .map(|mut attrib| {
+                attrib.shader_location += offset;
+                attrib
+            })
+            .collect()
+    }
+
+    fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        Self::buffer_layout_with_attributes(&Self::VERTEX_ATTRIBUTES)
+    }
+
+    fn buffer_layout_with_attributes<'a>(
+        attribs: &'a [wgpu::VertexAttribute],
+    ) -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: attribs,
+        }
+    }
+
+    fn as_wgsl_struct(name: &str) -> String {
+        assert_eq!(
+            Self::VERTEX_ATTRIBUTES.len(),
+            Self::VERTEX_MEMBERS.len(),
+            "VERTEX_ATTRIBUTES and VERTEX_MEMBERS must have the same length"
+        );
+
+        let mut out = format!("struct {} {{\n", name);
+        for (attr, member_name) in Self::VERTEX_ATTRIBUTES
+            .iter()
+            .zip(Self::VERTEX_MEMBERS.iter())
+        {
+            let ty = vertex_format_to_wgsl(attr.format)
+                .unwrap_or_else(|| panic!("Unsupported vertex format: {:?}", attr.format));
+            out.push_str(&format!(
+                "    @location({}) {}: {},\n",
+                attr.shader_location, member_name, ty
+            ));
+        }
+        out.push('}');
+        out
+    }
+
+    /// Process shader code by extracting requirements, checking compatibility, and injecting WGSL struct
+    fn process_shader_code(
+        shader_code: &str,
+        struct_name: &str,
+    ) -> Result<String, ShaderProcessingError> {
+        // Parse requirements from the shader
+        let requirements = PipelineRequirement::parse_requirements(shader_code);
+
+        // Check compatibility
+        Self::check_compatibility(&requirements)?;
+
+        // Remove rust requirements and inject WGSL struct
+        let cleaned_shader = Self::remove_rust_requirements(shader_code);
+        let wgsl_struct = Self::as_wgsl_struct(struct_name);
+
+        // Insert the WGSL struct at the beginning of the shader
+        Ok(format!("{}\n\n{}", wgsl_struct, cleaned_shader))
+    }
+
+    /// Check if this vertex type is compatible with the shader requirements
+    fn check_compatibility(
+        requirements: &[PipelineRequirement],
+    ) -> Result<(), ShaderProcessingError> {
+        for req in requirements {
+            if req.name == Self::VERTEX_LABEL || req.name == "Vertex" {
+                // Check if we have all required fields
+                for (field_name, expected_type) in &req.fields {
+                    let found = Self::VERTEX_MEMBERS
+                        .iter()
+                        .zip(Self::VERTEX_ATTRIBUTES.iter())
+                        .find(|(member_name, _)| *member_name == field_name);
+
+                    if let Some((_, attr)) = found {
+                        let actual_wgsl_type = vertex_format_to_wgsl(attr.format)
+                            .ok_or_else(|| ShaderProcessingError::UnsupportedFormat(attr.format))?;
+
+                        if actual_wgsl_type != expected_type {
+                            return Err(ShaderProcessingError::TypeMismatch {
+                                field: field_name.clone(),
+                                expected: expected_type.clone(),
+                                actual: actual_wgsl_type.to_string(),
+                            });
+                        }
+                    } else if !req.allow_extra {
+                        return Err(ShaderProcessingError::MissingField(field_name.clone()));
+                    }
+                }
+
+                // Check if we have extra fields that aren't allowed
+                if !req.allow_extra {
+                    for member_name in Self::VERTEX_MEMBERS {
+                        if !req.fields.contains_key(*member_name) {
+                            return Err(ShaderProcessingError::ExtraField(member_name.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove @rust struct requirements from shader code
+    fn remove_rust_requirements(shader_code: &str) -> String {
+        let mut result = String::new();
+        let mut chars = shader_code.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '@' {
+                // Check if this is the start of "@rust struct"
+                let remaining: String = chars.clone().collect();
+                if remaining.starts_with("rust struct") {
+                    // Skip until we find the closing brace
+                    while let Some(ch) = chars.next() {
+                        if ch == '}' {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+            result.push(ch);
+        }
+
+        result
+    }
+
+    fn shader_uuid<P: crate::ShaderHandle>() -> UUID {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = rustc_hash::FxHasher::default();
+        P::RENDER_PIPELINE_ID.hash(&mut hasher);
+        Self::VERTEX_ATTRIBUTES.hash(&mut hasher);
+        Self::VERTEX_MEMBERS.hash(&mut hasher);
+        UUID(hasher.finish())
+    }
 }
+
+pub trait AsVertexFormat {
+    const VERTEX_FORMAT: wgpu::VertexFormat;
+    const WGSL: Option<&'static str>;
+}
+
+// macro_rules! impl_as_vertex_fmt {
+//     ($ty:ty: $fmt:ident) => {
+//         impl AsVertexFormat for $ty {
+//             const FORMAT: wgpu::VertexFormat = wgpu::VertexFormat::$fmt;
+//         }
+//     };
+// }
+
+// macro_rules! impl_as_vertex_fmt {
+//     ($( $ty:ty: $fmt:ident ),* $(,)?) => {
+//         $(
+//             impl AsVertexFormat for $ty {
+//                 const FORMAT: wgpu::VertexFormat = wgpu::VertexFormat::$fmt;
+//             }
+//         )*
+//     };
+// }
 
 macro_rules! impl_as_vertex_fmt {
-    ($ty:ty: $fmt:ident) => {
-        impl AsVertexFormat for $ty {
-            const FORMAT: wgpu::VertexFormat = wgpu::VertexFormat::$fmt;
-            // fn format() -> wgpu::VertexFormat {
-            //     wgpu::VertexFormat::$fmt
-            // }
+    // single entry, optionally with WGSL
+    ($($ty:ty : $fmt:ident $( : $wgsl:expr )?),* $(,)?) => {
+        $(
+            impl AsVertexFormat for $ty {
+                const VERTEX_FORMAT: wgpu::VertexFormat = wgpu::VertexFormat::$fmt;
+                const WGSL: Option<&'static str> = impl_as_vertex_fmt!(@wgsl $($wgsl)?);
+            }
+        )*
+
+        pub fn vertex_format_to_wgsl(fmt: wgpu::VertexFormat) -> Option<&'static str> {
+            match fmt {
+                $(
+                    wgpu::VertexFormat::$fmt => {
+                        None$(.or(Some($wgsl)))?
+                    }
+                ),*
+                _ => None
+            }
         }
     };
+
+    // helper to expand WGSL presence
+    (@wgsl $wgsl:expr) => { Some($wgsl) };
+    (@wgsl) => { None };
 }
 
-// u8
-impl_as_vertex_fmt!(u8: Uint8);
-impl_as_vertex_fmt!([u8; 1]: Uint8);
-impl_as_vertex_fmt!([u8; 2]: Uint8x2);
-impl_as_vertex_fmt!([u8; 4]: Uint8x4);
+impl_as_vertex_fmt! {
+    u8: Uint8,
+    [u8; 1]: Uint8,
+    [u8; 2]: Uint8x2,
+    [u8; 4]: Uint8x4,
 
-// i8
-impl_as_vertex_fmt!(i8: Sint8);
-impl_as_vertex_fmt!([i8; 1]: Sint8);
-impl_as_vertex_fmt!([i8; 2]: Sint8x2);
-impl_as_vertex_fmt!([i8; 4]: Sint8x4);
+    i8: Sint8,
+    [i8; 1]: Sint8,
+    [i8; 2]: Sint8x2,
+    [i8; 4]: Sint8x4,
 
-// u16
-impl_as_vertex_fmt!(u16: Uint16);
-impl_as_vertex_fmt!([u16; 1]: Uint16);
-impl_as_vertex_fmt!([u16; 2]: Uint16x2);
-impl_as_vertex_fmt!([u16; 4]: Uint16x4);
+    u16: Uint16,
+    [u16; 1]: Uint16,
+    [u16; 2]: Uint16x2,
+    [u16; 4]: Uint16x4,
 
-// i16
-impl_as_vertex_fmt!(i16: Sint16);
-impl_as_vertex_fmt!([i16; 1]: Sint16);
-impl_as_vertex_fmt!([i16; 2]: Sint16x2);
-impl_as_vertex_fmt!([i16; 4]: Sint16x4);
+    i16: Sint16,
+    [i16; 1]: Sint16,
+    [i16; 2]: Sint16x2,
+    [i16; 4]: Sint16x4,
 
-// u32
-impl_as_vertex_fmt!(u32: Uint32);
-impl_as_vertex_fmt!([u32; 1]: Uint32);
-impl_as_vertex_fmt!([u32; 2]: Uint32x2);
-impl_as_vertex_fmt!([u32; 3]: Uint32x3);
-impl_as_vertex_fmt!([u32; 4]: Uint32x4);
+    u32: Uint32: "u32",
+    [u32; 1]: Uint32: "u32",
+    [u32; 2]: Uint32x2: "vec2<u32>",
+    [u32; 3]: Uint32x3: "vec3<u32>",
+    [u32; 4]: Uint32x4: "vec4<u32>",
 
-// i32
-impl_as_vertex_fmt!(i32: Sint32);
-impl_as_vertex_fmt!([i32; 1]: Sint32);
-impl_as_vertex_fmt!([i32; 2]: Sint32x2);
-impl_as_vertex_fmt!([i32; 3]: Sint32x3);
-impl_as_vertex_fmt!([i32; 4]: Sint32x4);
+    i32: Sint32: "i32",
+    [i32; 1]: Sint32: "i32",
+    [i32; 2]: Sint32x2: "vec2<i32>",
+    [i32; 3]: Sint32x3: "vec3<i32>",
+    [i32; 4]: Sint32x4: "vec4<i32>",
 
-// f32
-impl_as_vertex_fmt!(f32: Float32);
-impl_as_vertex_fmt!([f32; 1]: Float32);
-impl_as_vertex_fmt!([f32; 2]: Float32x2);
-impl_as_vertex_fmt!([f32; 3]: Float32x3);
-impl_as_vertex_fmt!([f32; 4]: Float32x4);
+    f32: Float32: "f32",
+    [f32; 1]: Float32: "f32",
+    [f32; 2]: Float32x2: "vec2<f32>",
+    [f32; 3]: Float32x3: "vec3<f32>",
+    [f32; 4]: Float32x4: "vec4<f32>",
 
-impl_as_vertex_fmt!(f64: Float64);
-impl_as_vertex_fmt!([f64; 1]: Float64);
-impl_as_vertex_fmt!([f64; 2]: Float64x2);
-impl_as_vertex_fmt!([f64; 3]: Float64x3);
-impl_as_vertex_fmt!([f64; 4]: Float64x4);
+    f64: Float64: "f64",
+    [f64; 1]: Float64: "f64",
+    [f64; 2]: Float64x2: "vec2<f64>",
+    [f64; 3]: Float64x3: "vec3<f64>",
+    [f64; 4]: Float64x4: "vec4<f64>",
 
-impl_as_vertex_fmt!(glam::UVec2: Uint32x2);
-impl_as_vertex_fmt!(glam::UVec3: Uint32x3);
-impl_as_vertex_fmt!(glam::UVec4: Uint32x4);
+    glam::UVec2: Uint32x2: "vec2<u32>",
+    glam::UVec3: Uint32x3: "vec3<u32>",
+    glam::UVec4: Uint32x4: "vec4<u32>",
 
-impl_as_vertex_fmt!(glam::IVec2: Sint32x2);
-impl_as_vertex_fmt!(glam::IVec3: Sint32x3);
-impl_as_vertex_fmt!(glam::IVec4: Sint32x4);
+    glam::IVec2: Sint32x2: "vec2<i32>",
+    glam::IVec3: Sint32x3: "vec3<i32>",
+    glam::IVec4: Sint32x4: "vec4<i32>",
 
-impl_as_vertex_fmt!(glam::Vec2: Float32x2);
-impl_as_vertex_fmt!(glam::Vec3: Float32x3);
-impl_as_vertex_fmt!(glam::Vec4: Float32x4);
-impl_as_vertex_fmt!(crate::RGBA: Float32x4);
+    glam::Vec2: Float32x2: "vec2<f32>",
+    glam::Vec3: Float32x3: "vec3<f32>",
+    glam::Vec4: Float32x4: "vec4<f32>",
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PipelineID {
-    ClearScreen,
-    DebugTriangle,
+    utils::RGB: Float32x3: "vec3<f32>",
+    utils::RGBA: Float32x4: "vec4<f32>",
 }
 
-pub struct PipelineRegistry {
-    pub map: HashMap<PipelineID, Arc<wgpu::RenderPipeline>>,
+#[derive(Debug)]
+pub struct ResourceCache<ID, RSRC> {
+    pub cache: HashMap<ID, Arc<RSRC>>,
 }
 
-impl PipelineRegistry {
+impl<ID: Copy + Eq + hash::Hash + fmt::Debug, RSRC> ResourceCache<ID, RSRC> {
     fn new() -> Self {
         Self {
-            map: HashMap::new(),
+            cache: HashMap::new(),
         }
     }
 
-    fn register(&mut self, id: PipelineID, pipeline: impl Into<Arc<wgpu::RenderPipeline>>) {
-        self.map.insert(id, pipeline.into());
+    fn register(&mut self, id: ID, pipeline: impl Into<Arc<RSRC>>) {
+        self.cache.insert(id, pipeline.into());
     }
 
-    fn get(&self, id: PipelineID) -> Option<Arc<wgpu::RenderPipeline>> {
-        self.map.get(&id).cloned()
+    fn get(&self, id: ID) -> Option<Arc<RSRC>> {
+        self.cache.get(&id).cloned()
     }
 
     /// lazy create helper (if you want one-shot creation)
-    fn get_or_insert_with<F>(&mut self, id: PipelineID, load_fn: F) -> Arc<wgpu::RenderPipeline>
+    fn get_or_insert_with<F>(&mut self, id: ID, load_fn: F) -> Arc<RSRC>
     where
-        F: FnOnce() -> wgpu::RenderPipeline,
+        F: FnOnce() -> RSRC,
     {
-        self.map
+        self.cache
             .entry(id)
             .or_insert_with(|| Arc::new(load_fn()))
             .clone()
@@ -120,7 +299,7 @@ impl PipelineRegistry {
 }
 
 pub struct WGPU {
-    pub pipeline_reg: Mutex<PipelineRegistry>,
+    pub pipeline_cache: Mutex<ResourceCache<UUID, wgpu::RenderPipeline>>,
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -162,21 +341,21 @@ impl WGPU {
     }
 
     /// Register a new render pipeline with the given ID
-    pub fn register_pipeline(&self, id: PipelineID, pipeline: wgpu::RenderPipeline) {
-        self.pipeline_reg.lock().unwrap().register(id, pipeline);
+    pub fn register_pipeline(&self, id: UUID, pipeline: wgpu::RenderPipeline) {
+        self.pipeline_cache.lock().unwrap().register(id, pipeline);
     }
 
     /// Get a registered pipeline by ID
-    pub fn get_pipeline(&self, id: PipelineID) -> Option<Arc<wgpu::RenderPipeline>> {
-        self.pipeline_reg.lock().unwrap().get(id)
+    pub fn get_pipeline(&self, id: UUID) -> Option<Arc<wgpu::RenderPipeline>> {
+        self.pipeline_cache.lock().unwrap().get(id)
     }
 
     /// Get or create a pipeline
-    pub fn get_or_init_pipeline<F>(&self, id: PipelineID, load: F) -> Arc<wgpu::RenderPipeline>
+    pub fn get_or_init_pipeline<F>(&self, id: UUID, load: F) -> Arc<wgpu::RenderPipeline>
     where
         F: FnOnce() -> wgpu::RenderPipeline,
     {
-        self.pipeline_reg
+        self.pipeline_cache
             .lock()
             .unwrap()
             .get_or_insert_with(id, load)
@@ -259,7 +438,7 @@ impl WGPU {
         surface.configure(&device, &surface_config);
 
         Self {
-            pipeline_reg: Mutex::new(PipelineRegistry::new()),
+            pipeline_cache: Mutex::new(ResourceCache::new()),
             surface,
             device,
             queue,
@@ -404,3 +583,111 @@ impl<'a> PipelineBuilder<'a> {
         })
     }
 }
+
+#[derive(Debug)]
+pub struct PipelineRequirement {
+    pub name: String,
+    pub fields: HashMap<String, String>, // name -> type string
+    pub allow_extra: bool,
+}
+
+impl PipelineRequirement {
+    pub fn parse_requirements(src: &str) -> Vec<PipelineRequirement> {
+        let mut out = Vec::new();
+        let mut search_start = 0;
+
+        while let Some(start) = src[search_start..].find("@rust struct") {
+            let absolute_start = search_start + start;
+            let rest = &src[absolute_start + "@rust struct".len()..];
+
+            // Parse struct name
+            let rest = rest.trim_start();
+            let name_end = rest
+                .find(|c: char| c.is_whitespace() || c == '{')
+                .unwrap_or(rest.len());
+            let name = rest[..name_end].trim().to_string();
+
+            // Find opening brace
+            let rest_after_name = &rest[name_end..];
+            if let Some(open_brace) = rest_after_name.find('{') {
+                if let Some(close_brace) = rest_after_name.find('}') {
+                    let body = &rest_after_name[open_brace + 1..close_brace];
+                    let mut fields = HashMap::new();
+                    let mut allow_extra = false;
+
+                    for part in body.split(',') {
+                        let part = part.trim();
+                        if part.is_empty() {
+                            continue;
+                        }
+                        if part == "..." {
+                            allow_extra = true;
+                            continue;
+                        }
+                        if let Some((field_name, field_type)) = part.split_once(':') {
+                            fields.insert(
+                                field_name.trim().to_string(),
+                                field_type.trim().to_string(),
+                            );
+                        }
+                    }
+
+                    out.push(PipelineRequirement {
+                        name,
+                        fields,
+                        allow_extra,
+                    });
+
+                    search_start = absolute_start + "@rust struct".len() + rest_after_name.len();
+                } else {
+                    break; // Malformed - no closing brace
+                }
+            } else {
+                break; // Malformed - no opening brace
+            }
+        }
+
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ShaderProcessingError {
+    MissingField(String),
+    ExtraField(String),
+    TypeMismatch {
+        field: String,
+        expected: String,
+        actual: String,
+    },
+    UnsupportedFormat(wgpu::VertexFormat),
+}
+
+impl std::fmt::Display for ShaderProcessingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShaderProcessingError::MissingField(field) => {
+                write!(f, "Missing required field: {}", field)
+            }
+            ShaderProcessingError::ExtraField(field) => {
+                write!(f, "Extra field not allowed: {}", field)
+            }
+            ShaderProcessingError::TypeMismatch {
+                field,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "Type mismatch for field '{}': expected '{}', got '{}'",
+                    field, expected, actual
+                )
+            }
+            ShaderProcessingError::UnsupportedFormat(format) => {
+                write!(f, "Unsupported vertex format: {:?}", format)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ShaderProcessingError {}

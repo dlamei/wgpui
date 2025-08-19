@@ -1,6 +1,7 @@
 mod gpu;
-mod ui;
 mod rect;
+mod ui;
+mod utils;
 
 use std::{
     collections::HashMap,
@@ -10,14 +11,19 @@ use std::{
 };
 
 use glam::{UVec2, Vec2, Vec3, Vec4};
-use gpu::{PipelineID, PipelineRegistry, WGPU};
+use gpu::{ResourceCache, WGPU};
+use utils::RGBA;
 use wgpu::util::DeviceExt;
 use winit::{
-    application::ApplicationHandler, dpi::PhysicalSize, event::WindowEvent,
-    event_loop::ActiveEventLoop, window::Window,
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::{KeyEvent, WindowEvent},
+    event_loop::ActiveEventLoop,
+    window::Window,
 };
 
-use macros::vertex_struct;
+pub use gpu::Vertex;
+pub use macros::vertex_struct;
 
 pub extern crate self as wgpui;
 
@@ -163,35 +169,14 @@ impl App {
             return;
         }
 
-        let clear_screen = ClearScreen::new(RGBA::hex("#242933"));
-        let dbg_tri = DebugTriangle::new(&self.renderer.wgpu);
+        self.on_update();
 
         match event {
             WE::RedrawRequested => {
-                self.window.pre_present_notify();
-
-                let status = self.renderer.prepare_frame();
-                match status {
-                    Ok(_) => (),
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                        let size = self.window.inner_size();
-                        self.renderer.resize(size.width, size.height);
-                        return;
-                    }
-                    Err(e) => {
-                        log::error!("prepare_frame: {e}");
-                        panic!();
-                    }
-                }
-
                 self.on_redraw(event_loop);
-                {
-                    let mut surface = self.renderer.surface_target();
-                    surface.render(&clear_screen);
-                    surface.render(&dbg_tri);
-                }
-
-                self.renderer.present_frame();
+            }
+            WE::KeyboardInput { event, .. } => {
+                self.on_keyboard(&event, event_loop);
             }
             WE::Resized(PhysicalSize { width, height }) => {
                 let (width, height) = (width.max(1), height.max(1));
@@ -203,12 +188,56 @@ impl App {
         }
     }
 
+    fn on_update(&mut self) {
+        // println!("{:#?}", self.renderer.wgpu.pipeline_cache);
+    }
+
+    fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::Escape) => {
+                event_loop.exit();
+            }
+            PhysicalKey::Code(KeyCode::KeyR) => {
+                let shader = ColorTint(RGBA::rand());
+                shader.try_rebuild::<VertexPosCol>(&self.renderer.wgpu);
+            }
+            _ => (),
+        }
+    }
+
     fn on_redraw(&mut self, event_loop: &ActiveEventLoop) {
         let prev_time = self.prev_frame_time;
         let curr_time = Instant::now();
         let dt = curr_time - prev_time;
         self.prev_frame_time = curr_time;
         self.delta_time = dt;
+
+        self.window.pre_present_notify();
+        let status = self.renderer.prepare_frame();
+        match status {
+            Ok(_) => (),
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                let size = self.window.inner_size();
+                self.renderer.resize(size.width, size.height);
+                return;
+            }
+            Err(e) => {
+                log::error!("prepare_frame: {e}");
+                panic!();
+            }
+        }
+
+        {
+            let clear_screen = ClearScreen("#242933".into());
+            let dbg_tri = DbgTriangle::new((255, 50, 50).into(), &self.renderer.wgpu);
+
+            let mut surface = self.renderer.surface_target();
+            surface.render(&clear_screen);
+            surface.render(&dbg_tri);
+        }
+        self.renderer.present_frame();
+        self.window.request_redraw();
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -221,13 +250,13 @@ vertex_struct!(VertexPosCol {
     col(1): RGBA,
 });
 
-
-pub struct DebugTriangle {
+pub struct DbgTriangle {
     vertex_buffer: wgpu::Buffer,
+    color: RGBA,
 }
 
-impl DebugTriangle {
-    pub fn new(wgpu: &WGPU) -> Self {
+impl DbgTriangle {
+    pub fn new(color: RGBA, wgpu: &WGPU) -> Self {
         let vertices = [
             VertexPosCol {
                 pos: [-0.5, -0.5, 0.0, 1.0].into(),
@@ -251,115 +280,167 @@ impl DebugTriangle {
                 usage: wgpu::BufferUsages::VERTEX,
             });
 
-        Self { vertex_buffer }
+        Self {
+            vertex_buffer,
+            color,
+        }
     }
 }
 
-impl RenderPassInst for DebugTriangle {
+impl RenderPassHandle for DbgTriangle {
     fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
         wgpu::LoadOp::Load
     }
 
-    fn render<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>) {
+    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {
+        let col = ColorTint(self.color);
+        // rpass.set_pipeline(&col.get_pipeline(wgpu));
+        // rpass.set_pipeline(&col.get_vertex_pipeline::<ui::VertexRect>(wgpu));
+        rpass.set_pipeline(&col.get_vertex_pipeline::<VertexPosCol>(wgpu));
         rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         rpass.draw(0..3, 0..1);
-    }
-
-    fn render_pipeline_id() -> PipelineID {
-        PipelineID::DebugTriangle
-    }
-
-    fn load_render_pipeline(wgpu: &WGPU) -> wgpu::RenderPipeline {
-        const SHADER_SRC: &str = r#"
-        struct VSOut {
-            @builtin(position) pos: vec4<f32>,
-            @location(0) color: vec4<f32>,
-        };
-        
-        @vertex
-        fn vs_main(
-            @location(0) position: vec3<f32>,
-            @location(1) color: vec4<f32>
-        ) -> VSOut {
-            var out: VSOut;
-            out.pos = vec4<f32>(position, 1.0);
-            out.color = color;
-            return out;
-        }
-        
-        @fragment
-        fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
-            return in.color;
-        }
-        "#;
-
-        gpu::PipelineBuilder::new(SHADER_SRC, wgpu.surface_format)
-            .label("debug_triangle_pipeline")
-            .vertex_buffers(&[VertexPosCol::buffer_layout()])
-            .build(&wgpu.device)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ClearScreen {
-    clear_col: RGBA,
-}
+pub struct ClearScreen(pub RGBA);
 
-impl RenderPassInst for ClearScreen {
+impl RenderPassHandle for ClearScreen {
     fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
-        wgpu::LoadOp::Clear(self.clear_col.into())
+        wgpu::LoadOp::Clear(self.0.into())
     }
 
     fn store_op(&self) -> wgpu::StoreOp {
         wgpu::StoreOp::Store
     }
 
-    fn render<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>) {
-        // rpass.set_pipeline(&self.pipeline);
-        rpass.draw(0..0, 0..0);
-    }
+    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU) {}
+}
 
-    fn render_pipeline_id() -> PipelineID {
-        PipelineID::ClearScreen
-    }
+pub type ShaderID = &'static str;
 
-    fn load_render_pipeline(wgpu: &WGPU) -> wgpu::RenderPipeline {
-        const SHADER_SRC: &'static str = r#"
-        @vertex
-            fn vs_main() -> @builtin(position) vec4<f32> {
-                return vec4(0);
+pub struct ColorTint(pub RGBA);
+
+impl ShaderHandle for ColorTint {
+    const RENDER_PIPELINE_ID: ShaderID = "color_tint";
+
+    fn build_pipeline<V: Vertex>(&self, wgpu: &WGPU) -> wgpu::RenderPipeline {
+        log::trace!(
+            "[pipeline] {}: build with color: {}",
+            Self::RENDER_PIPELINE_ID,
+            self.0
+        );
+        const SHADER_SRC: &str = r#"
+                struct VSOut {
+                    @builtin(position) pos: vec4<f32>,
+                    @location(0) color: vec4<f32>,
+                };
+
+            @rust struct Vertex {
+                pos: vec4<f32>,
+                col: vec4<f32>,
+                ...
             }
-        @fragment
-            fn fs_main() -> @location(0) vec4<f32> {
-                return vec4<f32>(1.0, 1.0, 1.0, 1.0);
-            }
-        "#;
 
-        gpu::PipelineBuilder::new(SHADER_SRC, wgpu.surface_format)
+            @vertex
+                fn vs_main(
+                    v: Vertex
+                ) -> VSOut {
+                    var out: VSOut;
+                    // out.pos = vec4<f32>(position, 1.0);
+                    out.pos = v.pos;
+                    out.color = v.col * $COLOR;
+                    return out;
+                }
+
+            @fragment
+                fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
+                    return in.color;
+                }
+            "#;
+        let shader_src = SHADER_SRC.replace("$COLOR", &self.0.as_wgsl_vec4());
+
+        let prcs = V::process_shader_code(&shader_src, "Vertex");
+        let src = match &prcs {
+            Ok(prcs_src) => prcs_src,
+            Err(err) => {
+                log::error!("could not process shader: {err}");
+                panic!();
+            }
+        };
+
+        gpu::PipelineBuilder::new(&src, wgpu.surface_format)
             .label("debug_triangle_pipeline")
-            .vertex_buffers(&[])
+            .vertex_buffers(&[V::buffer_layout()])
             .build(&wgpu.device)
     }
 }
 
-impl ClearScreen {
-    pub fn new(clear_col: RGBA) -> Self {
-        Self { clear_col }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UUID(pub u64);
+
+pub trait ShaderHandle {
+    const RENDER_PIPELINE_ID: ShaderID;
+    fn build_pipeline<V: Vertex>(&self, wgpu: &WGPU) -> wgpu::RenderPipeline;
+
+    fn pipeline_generic_id() -> UUID {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = rustc_hash::FxHasher::default();
+        Self::RENDER_PIPELINE_ID.hash(&mut hasher);
+        UUID(hasher.finish())
     }
-}
 
-pub trait PipelineInst {
-    fn pipeline_id(&self) -> PipelineID;
-    fn compile_pipeline(&self, wgpu: &WGPU) -> wgpu::RenderPipeline;
+    fn pipeline_vertex_id<V: Vertex>() -> UUID {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = rustc_hash::FxHasher::default();
+        Self::RENDER_PIPELINE_ID.hash(&mut hasher);
+        V::VERTEX_ATTRIBUTES.hash(&mut hasher);
+        V::VERTEX_MEMBERS.hash(&mut hasher);
+        UUID(hasher.finish())
+    }
 
-    fn get_pipeline(&self, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
-        wgpu.get_or_init_pipeline(self.pipeline_id(), || {
-            self.compile_pipeline(wgpu)
+    fn should_rebuild(&self) -> bool {
+        false
+    }
+
+    fn try_rebuild<V: Vertex>(&self, wgpu: &WGPU) {
+        log::info!(
+            "[pipeline] {}: rebuild for vertex ({})",
+            Self::RENDER_PIPELINE_ID,
+            V::VERTEX_LABEL
+        );
+        wgpu.register_pipeline(
+            Self::pipeline_vertex_id::<V>(),
+            self.build_pipeline::<V>(wgpu),
+        );
+    }
+
+    fn get_vertex_pipeline<V: Vertex>(&self, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
+        if self.should_rebuild() {
+            self.try_rebuild::<V>(wgpu);
+            // wgpu.register_pipeline(Self::pipeline_vertex_id::<V>(), self.build_pipeline::<V>(wgpu))
+        }
+        wgpu.get_or_init_pipeline(Self::pipeline_vertex_id::<V>(), || {
+            log::info!(
+                "[pipeline] {}: build for vertex ({})",
+                Self::RENDER_PIPELINE_ID,
+                V::VERTEX_LABEL
+            );
+            self.build_pipeline::<V>(wgpu)
         })
     }
+
+    // fn get_pipeline_directly(&self, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
+    //     if self.should_rebuild() {
+    //         wgpu.register_pipeline(Self::pipeline_generic_id(), self.build_pipeline::<V>(wgpu))
+    //     }
+    //     wgpu.get_or_init_pipeline(Self::pipeline_generic_id(), || {
+    //         self.build_pipeline::<V>(wgpu)
+    //     })
+    // }
 }
 
-pub trait RenderPassInst {
+pub trait RenderPassHandle {
     fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
         wgpu::LoadOp::Load
     }
@@ -367,16 +448,7 @@ pub trait RenderPassInst {
         wgpu::StoreOp::Store
     }
 
-    fn render_pipeline_id() -> PipelineID;
-    fn load_render_pipeline(wgpu: &WGPU) -> wgpu::RenderPipeline;
-
-    fn render_pipeline(wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
-        wgpu.get_or_init_pipeline(Self::render_pipeline_id(), || {
-            Self::load_render_pipeline(wgpu)
-        })
-    }
-
-    fn render<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>);
+    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU);
 }
 
 pub struct Renderer {
@@ -399,23 +471,19 @@ impl<'a> Drop for RenderTarget<'a> {
             let encoder = std::mem::ManuallyDrop::take(&mut self.encoder);
             self.wgpu.queue.submit(Some(encoder.finish()));
         }
-        //     let encoder = std::ptr::read(&*self.encoder);
-        //     let finished = encoder.finish();
-        //     self.wgpu.queue.submit(Some(finished));
-        // }
     }
 }
 
 impl<'a> RenderTarget<'a> {
-    pub fn render<T: RenderPassInst>(&mut self, obj: &T) {
+    pub fn render<RH: RenderPassHandle>(&mut self, rh: &RH) {
         let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.target_view,
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
-                    load: obj.load_op(),
-                    store: obj.store_op(),
+                    load: rh.load_op(),
+                    store: rh.store_op(),
                 },
             })],
             depth_stencil_attachment: None,
@@ -424,8 +492,7 @@ impl<'a> RenderTarget<'a> {
             occlusion_query_set: None,
         });
 
-        rpass.set_pipeline(&T::render_pipeline(&self.wgpu));
-        obj.render(&mut rpass);
+        rh.draw(&mut rpass, self.wgpu);
     }
 }
 
@@ -644,133 +711,5 @@ impl Renderer {
             mip_level_count: None,
             usage: None,
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, bytemuck::Pod, bytemuck::Zeroable)]
-#[repr(C)]
-pub struct RGBA {
-    pub r: f32,
-    pub g: f32,
-    pub b: f32,
-    pub a: f32,
-}
-
-impl fmt::Display for RGBA {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.a == 1.0 {
-            write!(f, "({:.2}, {:.2}, {:.2})", self.r, self.g, self.b)
-        } else {
-            write!(
-                f,
-                "({:.2}, {:.2}, {:.2}, {:.2})",
-                self.r, self.g, self.b, self.a
-            )
-        }
-    }
-}
-
-impl RGBA {
-    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
-        Self::rgba_f(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-    }
-
-    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self::rgba_f(
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            a as f32 / 255.0,
-        )
-    }
-
-    pub const fn rgb_f(r: f32, g: f32, b: f32) -> Self {
-        Self::rgba_f(r, g, b, 1.0)
-    }
-
-    pub const fn rgba_f(r: f32, g: f32, b: f32, a: f32) -> Self {
-        Self { r, g, b, a }
-    }
-
-    pub fn hex(hex: &str) -> Self {
-        fn to_linear(u: u8) -> f32 {
-            let srgb = u as f32 / 255.0;
-            if srgb <= 0.04045 {
-                srgb / 12.92
-            } else {
-                ((srgb + 0.055) / 1.055).powf(2.4)
-            }
-        }
-
-        let hex = hex.trim_start_matches('#');
-        let vals: Vec<u8> = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-            .collect();
-
-        let (r8, g8, b8, a8) = match vals.as_slice() {
-            [r, g, b] => (*r, *g, *b, 255),
-            [r, g, b, a] => (*r, *g, *b, *a),
-            _ => panic!("Hex code must be 6 or 8 characters long"),
-        };
-
-        Self::rgba_f(
-            to_linear(r8),
-            to_linear(g8),
-            to_linear(b8),
-            a8 as f32 / 255.0,
-        )
-    }
-
-    pub const RED: RGBA = RGBA::rgb(255, 0, 0);
-    pub const GREEN: RGBA = RGBA::rgb(0, 255, 0);
-    pub const BLUE: RGBA = RGBA::rgb(0, 0, 255);
-
-    pub const WHITE: RGBA = RGBA::rgb(255, 255, 255);
-    pub const BLACK: RGBA = RGBA::rgb(0, 0, 0);
-
-    pub const DEBUG: RGBA = RGBA::rgb(200, 0, 100);
-
-    pub const ZERO: RGBA = RGBA::rgba(0, 0, 0, 0);
-}
-
-impl From<RGBA> for wgpu::Color {
-    fn from(c: RGBA) -> Self {
-        wgpu::Color {
-            r: c.r as f64,
-            g: c.g as f64,
-            b: c.b as f64,
-            a: c.a as f64,
-        }
-    }
-}
-
-pub fn hex_to_col(hex: &str) -> wgpu::Color {
-    fn to_linear(u: u8) -> f64 {
-        let srgb = u as f64 / 255.0;
-        if srgb <= 0.04045 {
-            srgb / 12.92
-        } else {
-            ((srgb + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
-    let hex = hex.trim_start_matches('#');
-    let vals: Vec<u8> = (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-        .collect();
-
-    let (r8, g8, b8, a8) = match vals.as_slice() {
-        [r, g, b] => (*r, *g, *b, 255),
-        [r, g, b, a] => (*r, *g, *b, *a),
-        _ => panic!("Hex code must be 6 or 8 characters long"),
-    };
-
-    wgpu::Color {
-        r: to_linear(r8),
-        g: to_linear(g8),
-        b: to_linear(b8),
-        a: a8 as f64 / 255.0, // alpha is linear already
     }
 }

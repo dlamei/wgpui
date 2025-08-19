@@ -36,7 +36,6 @@ pub struct Rect {
     max: Vec2,
 }
 
-
 const fn vec2(x: f32, y: f32) -> Vec2 {
     Vec2::new(x, y)
 }
@@ -54,7 +53,6 @@ pub fn almost_equal(a: f32, b: f32, epsilon: f32) -> bool {
         abs_max <= epsilon || ((a - b).abs() / abs_max) <= epsilon
     }
 }
-
 
 impl Rect {
     /// Infinite rectangle that contains every point.
@@ -245,10 +243,7 @@ impl Rect {
         let c = rot * self.left_bottom();
         let d = rot * self.right_bottom();
 
-        Self::from_min_max(
-            a.min(b).min(c).min(d),
-            a.max(b).max(c).max(d),
-        )
+        Self::from_min_max(a.min(b).min(c).min(d), a.max(b).max(c).max(d))
     }
 
     #[must_use]
@@ -452,7 +447,6 @@ impl Rect {
         inside_dist + outside_dist
     }
 
-
     /// `width < 0 || height < 0`
     #[inline(always)]
     pub fn is_negative(&self) -> bool {
@@ -596,14 +590,12 @@ impl Rect {
         vec2(self.right(), self.bottom())
     }
 
-
     /// Split rectangle in left and right halves at the given `x` coordinate.
     pub fn split_left_right_at_x(&self, split_x: f32) -> (Self, Self) {
         let left = Self::from_min_max(self.min, Vec2::new(split_x, self.max.y));
         let right = Self::from_min_max(Vec2::new(split_x, self.min.y), self.max);
         (left, right)
     }
-
 
     /// Split rectangle in top and bottom halves at the given `y` coordinate.
     pub fn split_top_bottom_at_y(&self, split_y: f32) -> (Self, Self) {

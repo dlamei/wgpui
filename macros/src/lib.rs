@@ -4,6 +4,25 @@ use quote::quote;
 use syn::{parse_macro_input, Token, Ident, Type, LitInt};
 use syn::parse::{Parse, ParseStream, Result};
 
+fn camel_to_snake(camel: &str) -> String {
+    let mut snake = String::new();
+
+    let mut prev_upper = false;
+    let mut first = true;
+    for c in camel.chars() {
+        if c.is_uppercase() && !prev_upper && !first{
+            snake += "_";
+            prev_upper = true;
+        } else if c.is_lowercase() {
+            prev_upper = false;
+        }
+        snake += &c.to_lowercase().to_string();
+        first = false;
+    }
+
+    snake
+}
+
 struct VertexField {
     name: Ident,
     ty: Type,
@@ -90,23 +109,29 @@ pub fn vertex_struct(input: TokenStream) -> TokenStream {
             wgpu::VertexAttribute {
                 offset: (#offset) as u64,
                 shader_location: #location,
-                format: <#ty as wgpui::AsVertexFormat>::FORMAT,
+                format: <#ty as wgpui::AsVertexFormat>::VERTEX_FORMAT,
             }
         }
     });
 
-    let attributes_offset = vertex_struct.fields.iter().zip(offset_exprs).map(|(f, offset)| {
-        let location = f.location;
-        let ty = f.ty.clone();
-        
-        quote! {
-            wgpu::VertexAttribute {
-                offset: (#offset) as u64,
-                shader_location: #location + offset,
-                format: <#ty as wgpui::AsVertexFormat>::FORMAT,
-            }
-        }
+    let member_names = vertex_struct.fields.iter().map(|f| {
+        f.name.to_string()
     });
+
+    // let attributes_offset = vertex_struct.fields.iter().zip(offset_exprs).map(|(f, offset)| {
+    //     let location = f.location;
+    //     let ty = f.ty.clone();
+        
+    //     quote! {
+    //         wgpu::VertexAttribute {
+    //             offset: (#offset) as u64,
+    //             shader_location: #location + offset,
+    //             format: <#ty as wgpui::AsVertexFormat>::FORMAT,
+    //         }
+    //     }
+    // });
+
+    let label = camel_to_snake(&name.to_string());
     
     let expanded = quote! {
         #[repr(C)]
@@ -114,32 +139,43 @@ pub fn vertex_struct(input: TokenStream) -> TokenStream {
         pub struct #name {
             #(#field_defs,)*
         }
-        
-        impl #name {
 
-            pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; #n_attribs] = [
+        impl wgpui::Vertex for #name {
+            const VERTEX_LABEL: &'static str = #label;
+            const VERTEX_ATTRIBUTES: &'static [wgpu::VertexAttribute] = &[
                 #(#attributes,)*
             ];
 
-            pub fn vertex_attributes_offset(offset: u32) -> [wgpu::VertexAttribute; #n_attribs] {
-                [
-                    #(#attributes_offset,)*
-                ]
-            }
-
-            pub fn buffer_layout_with_attributes<'a>(attribs: &'a [wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'a> {
-                wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<#name>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: attribs,
-                }
-            }
-            
-            pub fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
-                Self::buffer_layout_with_attributes(&Self::VERTEX_ATTRIBUTES)
-            }
-
+            const VERTEX_MEMBERS: &'static [&'static str] = &[
+                #(#member_names,)*
+            ];
         }
+        
+        // impl #name {
+
+        //     pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; #n_attribs] = [
+        //         #(#attributes,)*
+        //     ];
+
+        //     pub fn vertex_attributes_offset(offset: u32) -> [wgpu::VertexAttribute; #n_attribs] {
+        //         [
+        //             #(#attributes_offset,)*
+        //         ]
+        //     }
+
+        //     pub fn buffer_layout_with_attributes<'a>(attribs: &'a [wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'a> {
+        //         wgpu::VertexBufferLayout {
+        //             array_stride: std::mem::size_of::<#name>() as wgpu::BufferAddress,
+        //             step_mode: wgpu::VertexStepMode::Vertex,
+        //             attributes: attribs,
+        //         }
+        //     }
+            
+        //     pub fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        //         Self::buffer_layout_with_attributes(&Self::VERTEX_ATTRIBUTES)
+        //     }
+
+        // }
     };
     
     TokenStream::from(expanded)

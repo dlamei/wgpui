@@ -1,17 +1,24 @@
 use glam::{UVec2, Vec2, Vec3, Vec4};
 use rustc_hash::FxHashMap;
 
-use std::{fmt, hash::{Hash, Hasher}, ops};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    ops,
+};
 
 use macros::vertex_struct;
 
-use crate::{rect::{self, Rect}, RGBA};
+use crate::{
+    RGBA,
+    rect::{self, Rect},
+    utils::RGB,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(u64);
 
 impl NodeId {
-
     pub const NULL: NodeId = NodeId(0);
 
     pub fn from_str(s: &str) -> Self {
@@ -53,7 +60,6 @@ pub struct Size {
     strictness: f32,
 }
 
-
 pub struct Node {
     id: NodeId,
 
@@ -86,7 +92,6 @@ macro_rules! sig_bits {
         $(sig_bits!($x) | )* 0
     }
 }
-
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -145,7 +150,6 @@ sig_fn!(double_clicked => DOUBLE_CLICK_L);
 sig_fn!(dragging => DRAG_L);
 sig_fn!(released => RELEASE_L);
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MouseState {
     pub left: bool,
@@ -163,13 +167,12 @@ pub struct State {
     pub hot_node: NodeId,
     pub active_node: NodeId,
 
-    pub cached_nodes: FxHashMap<NodeId, Node>
+    pub cached_nodes: FxHashMap<NodeId, Node>,
 }
 
 vertex_struct!(VertexRect {
-    min(2): Vec2,
-    max(1): Vec2,
+    top_left(0): Vec2,
+    size(1): Vec2,
+    col(2): RGBA,
+    pos(3): RGBA,
 });
-
-
-

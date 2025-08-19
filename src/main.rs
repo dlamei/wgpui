@@ -14,9 +14,10 @@ fn main() {
         env_logger::builder()
             .filter_level(log::LevelFilter::Info)
             .filter_module("cranelift_jit::backend", log::LevelFilter::Warn)
+            .filter_module("wgpui", log::LevelFilter::Trace)
             // .filter_module("atlas", log::LevelFilter::Info)
             // .filter_module("wgpu_hal::auxil::dxgi", log::LevelFilter::Error)
-            // .filter_module("wgpu_hal::auxil::dxgi", log::LevelFilter::Warn)
+            .filter_module("wgpu_hal", log::LevelFilter::Warn)
             .format_timestamp(None)
             .init();
     }
