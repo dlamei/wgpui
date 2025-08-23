@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
 use std::{
-    collections::VecDeque, hash::{Hash, Hasher}, ops
+    collections::VecDeque, fmt, hash::{Hash, Hasher}, ops, time::{Duration, Instant}
 };
 
 use crate::{
@@ -13,12 +13,11 @@ use crate::{
     rect::Rect,
 };
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(u64);
+pub struct WidgetId(u64);
 
-impl NodeId {
-    pub const NULL: NodeId = NodeId(0);
+impl WidgetId {
+    pub const NULL: WidgetId = WidgetId(0);
 
     pub fn from_str(s: &str) -> Self {
         let mut hasher = rustc_hash::FxHasher::default();
@@ -31,9 +30,9 @@ impl NodeId {
     }
 }
 
-impl Default for NodeId {
+impl Default for WidgetId {
     fn default() -> Self {
-        NodeId::NULL
+        WidgetId::NULL
     }
 }
 
@@ -54,9 +53,9 @@ impl Axis {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MouseButton {
-    Left,
-    Right,
-    Middle,
+    Left = 0,
+    Right = 1,
+    Middle = 2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -65,18 +64,7 @@ pub enum SizingTyp {
     Fit,
     Grow,
     Fixed(f32),
-}
-
-pub struct Size {
-    typ: SizingTyp,
-    strictness: f32,
-}
-
-impl Size {
-    const NULL: Size = Size {
-        typ: SizingTyp::Null,
-        strictness: 0.0,
-    };
+    Percent(f32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,10 +84,12 @@ impl<T> ops::IndexMut<Axis> for PerAxis<T> {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Padding {
-    left: f32, right: f32, top: f32, bottom: f32,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
 }
 
 impl Padding {
@@ -107,8 +97,19 @@ impl Padding {
 
     pub const fn new(left: f32, right: f32, top: f32, bottom: f32) -> Self {
         Self {
-            left, right, top, bottom
+            left,
+            right,
+            top,
+            bottom,
         }
+    }
+
+    pub const fn all(v: f32) -> Self {
+        Self::new(v, v, v, v)
+    }
+
+    pub fn axis_sum(&self) -> Vec2 {
+        (self.left + self.right, self.top + self.bottom).into()
     }
 
     pub fn sum_along_axis(&self, a: Axis) -> f32 {
@@ -126,138 +127,14 @@ impl Padding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Node {
-    pub id: NodeId,
-
-    pub first: NodeId,
-    pub last: NodeId,
-    pub next: NodeId,
-    pub prev: NodeId,
-    pub parent: NodeId,
-    pub n_children: u32,
-
-    pub corner_radius: f32,
-    pub background_color: RGBA,
-    pub layout_direction: Axis,
-    pub padding: Padding,
-    pub child_gap: f32,
-
-    pub sizing_typ: PerAxis<SizingTyp>,
-
-    pub fixed_pos: Option<Vec2>,
-    // comp_rel_pos: Vec2,
-
-    pub size: Vec2,
-    pub pos: Vec2,
-    // fixed_pos: Vec2,
-    // fixed_size: Vec2,
-    // min_size: Vec2,
-
-    // pref_size: PerAxis<Size>,
-
-    pub rect: Rect,
-
-    pub last_frame_used: u64,
-}
-
-
-impl Node {
-    const NULL: Node = Node {
-        id: NodeId::NULL,
-        first: NodeId::NULL,
-        last: NodeId::NULL,
-        next: NodeId::NULL,
-        prev: NodeId::NULL,
-        parent: NodeId::NULL,
-        n_children: 0,
-
-        corner_radius: 0.0,
-        background_color: RGBA::ZERO,
-        layout_direction: Axis::X,
-        padding: Padding::ZERO,
-        child_gap: 0.0,
-
-        fixed_pos: Some(Vec2::ZERO),
-        // comp_rel_pos: Vec2::ZERO,
-        sizing_typ: PerAxis([SizingTyp::Null;2]),
-
-        size: Vec2::NAN,
-        pos: Vec2::NAN,
-
-        // fixed_pos: Vec2::ZERO,
-        // fixed_size: Vec2::ZERO,
-        // min_size: Vec2::ZERO,
-        // pref_size: PerAxis([Size::NULL; 2]),
-        rect: Rect::ZERO,
-        last_frame_used: 0,
-    };
-
-    pub fn background_color(mut self, col: impl Into<RGBA>) -> Self {
-        self.background_color = col.into();
-        self
-    }
-
-    pub fn position(mut self, pos: impl Into<Vec2>) -> Self {
-        self.fixed_pos = Some(pos.into());
-        self
-    }
-
-    pub fn fixed_size_x(mut self, size: f32) -> Self {
-        self.sizing_typ[Axis::X] = SizingTyp::Fixed(size);
-        self
-    }
-
-    pub fn fixed_size_y(mut self, size: f32) -> Self {
-        self.sizing_typ[Axis::Y] = SizingTyp::Fixed(size);
-        self
-    }
-
-    pub fn fixed_size(self, size: impl Into<Vec2>) -> Self {
-        let size: Vec2 = size.into();
-        self.fixed_size_x(size.x).fixed_size_y(size.y)
-    }
-
-    pub fn grow_x(mut self) -> Self {
-        self.sizing_typ[Axis::X] = SizingTyp::Grow;
-        self
-    }
-
-    pub fn grow_y(mut self) -> Self {
-        self.sizing_typ[Axis::Y] = SizingTyp::Grow;
-        self
-    }
-
-    pub fn grow(self) -> Self {
-        self.grow_x().grow_y()
-    }
-
-    pub fn child_gap(mut self, gap: f32) -> Self {
-        self.child_gap = gap;
-        self
-    }
-
-    pub fn layout_dir(mut self, axis: Axis) -> Self {
-        self.layout_direction = axis;
-        self
-    }
-
-    pub fn as_rect_inst(&self) -> RectInst {
-        RectInst {
-            min: self.pos,
-            max: self.pos + self.size,
-            color: self.background_color,
-        }
-    }
-}
-
-
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct NodeFlags: u32 {
+    pub struct WidgetFlags: u32 {
+        const NONE              = 0;
         const DRAW_BORDER       = 1 << 0;
         const DRAW_BACKGROUND   = 1 << 1;
         const DRAGGABLE         = 1 << 2;
+        const HOVERABLE         = 1 << 3;
     }
 }
 
@@ -300,12 +177,6 @@ bitflags::bitflags! {
         const MOUSE_OVER = 1 << 19; // may be occluded
 
         const PRESSED_KEYBOARD = 1 << 20;
-
-        // const PRESS = sig_bit!(PRESS_L | PRESS_KEYBOARD);
-        // const RELEASE = sig_bit!(RELEASE_L);
-        // const CLICK = sig_bit!(CLICK_L | PRESS_KEYBOARD);
-        // const DOUBLE_CLICK = sig_bit!(DOUBLE_CLICK_L);
-        // const DRAG = sig_bit!(DRAG_L);
     }
 }
 
@@ -320,338 +191,42 @@ macro_rules! sig_fn {
     }
 }
 
+sig_fn!(hovering => HOVERING);
+sig_fn!(mouse_over => MOUSE_OVER);
 sig_fn!(pressed => PRESSED_L | PRESSED_KEYBOARD);
 sig_fn!(clicked => CLICKED_L | PRESSED_KEYBOARD);
 sig_fn!(double_clicked => DOUBLE_CLICKED_L);
 sig_fn!(dragging => DRAGGING_L);
 sig_fn!(released => RELEASED_L);
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MouseState {
-    pub left: bool,
-    pub middle: bool,
-    pub right: bool,
-}
-
-impl ops::Index<MouseButton> for MouseState {
-    type Output = bool;
-
-    fn index(&self, index: MouseButton) -> &Self::Output {
-        match index {
-            MouseButton::Left => &self.left,
-            MouseButton::Right => &self.right,
-            MouseButton::Middle => &self.middle,
-        }
-    }
-}
-
-impl ops::IndexMut<MouseButton> for MouseState {
-    fn index_mut(&mut self, index: MouseButton) -> &mut Self::Output {
-        match index {
-            MouseButton::Left => &mut self.left,
-            MouseButton::Right => &mut self.right,
-            MouseButton::Middle => &mut self.middle,
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct State {
-    pub mouse_pos: Vec2,
-    pub mouse_pressed: MouseState,
-    pub mouse_drag_start: Option<Vec2>,
-
-    pub root: NodeId,
-
-    pub hot_node: NodeId,
-    pub active_node: NodeId,
-
-    pub node_stack: Vec<Node>,
-    pub cached_nodes: FxHashMap<NodeId, Node>,
-    pub roots: Vec<NodeId>,
-
-    pub frame_index: u64,
-
-    pub id_stack: Vec<NodeId>,
-}
-
-impl State {
-
-    pub fn update_mouse_pos(&mut self, x: f32, y: f32) {
-        self.mouse_pos = Vec2::new(x, y);
-    }
-
-    pub fn update_mouse_button(&mut self, button: MouseButton, pressed: bool) {
-        self.mouse_pressed[button] = pressed;
-    }
-
-    pub fn node_id_from_str(&self, str: &str) -> NodeId {
-        use std::hash::{Hash, Hasher};
-        if let Some(id) = self.id_stack.last() {
-            let mut hasher = rustc_hash::FxHasher::with_seed(id.0 as usize);
-            str.hash(&mut hasher);
-            NodeId(hasher.finish())
-        } else {
-            NodeId::from_str(str)
-        }
-    }
-
-    pub fn node_fit_sizing(&mut self, mut n: Node) -> Node {
-        match n.sizing_typ[Axis::X] {
-            SizingTyp::Null => (),
-            SizingTyp::Fit => (),
-            SizingTyp::Grow => (),
-            SizingTyp::Fixed(x) => n.size.x = x,
-        }
-        match n.sizing_typ[Axis::Y] {
-            SizingTyp::Null => (),
-            SizingTyp::Fit => (),
-            SizingTyp::Grow => (),
-            SizingTyp::Fixed(y) => n.size.y = y,
-        }
-
-        if let Some(p) = self.parent_node_mut() {
-            n.size.x += n.padding.left + n.padding.right;
-            n.size.y += n.padding.top + n.padding.bottom;
-            match p.layout_direction {
-                Axis::X => {
-                    p.size.x += (p.n_children - 1) as f32 * p.child_gap;
-                    p.size.x += n.size.x;
-                    p.size.y = p.size.y.max(n.size.y);
-                },
-                Axis::Y => {
-                    p.size.y += (p.n_children - 1) as f32 * p.child_gap;
-                    p.size.x = p.size.x.max(n.size.x);
-                    p.size.y += n.size.y;
-                },
-            }
-        }
-        n
-    }
-
-    pub fn cached_node(&self, id: NodeId) -> &Node {
-        if id.is_null() {
-            panic!("NULL id");
-        }
-
-        self.cached_nodes.get(&id).unwrap()
-    }
-
-    pub fn cached_node_mut(&mut self, id: NodeId) -> &mut Node {
-        if id.is_null() {
-            panic!("NULL id");
-        }
-
-        self.cached_nodes.get_mut(&id).unwrap()
-    }
-
-    pub fn node_grow_elements_along_axis(&mut self, p: &Node, a: Axis) {
-        let mut growable = Vec::new();
-
-        let mut child_id = p.first;
-        while !child_id.is_null() {
-            let n = self.cached_node_mut(child_id);
-            if n.sizing_typ[a] == SizingTyp::Grow {
-                growable.push(child_id);
-            }
-            child_id = n.next;
-        }
-
-        if growable.is_empty() {
-            return
-        }
-
-        let a_idx = a as usize;
-        let mut remaining = p.size[a_idx];
-        remaining -= p.padding.sum_along_axis(a);
-
-        for id in &growable {
-            let n = self.cached_node(*id);
-            remaining -= n.size[a_idx];
-        }
-
-        remaining -= (p.n_children - 1) as f32 * p.child_gap;
-
-        while remaining > 0.0 && !growable.is_empty() {
-            let mut smallest = self.cached_node(growable[0]).size[a_idx];
-            let mut second_smallest = f32::INFINITY;
-            let mut to_add = remaining;
-
-            for id in &growable {
-                let n = self.cached_node(*id);
-                if n.size[a_idx] < smallest {
-                    second_smallest = smallest;
-                    smallest = n.size[a_idx];
-                }
-                if n.size[a_idx] > smallest {
-                    second_smallest = second_smallest.min(n.size[a_idx]);
-                    to_add = second_smallest - smallest;
-                }
-            }
-
-            to_add = to_add.min(remaining / growable.len() as f32);
-
-            for id in &growable {
-                let n = self.cached_node_mut(*id);
-                if n.size[a_idx] == smallest {
-                    n.size[a_idx] += to_add;
-                    remaining -= to_add;
-                }
-            }
-        }
-    }
-
-    pub fn node_compute_element_positions(&mut self, p: &Node) {
-
-        // let mut x_off = p.padding.left + p.pos;
-        // let mut y_off = p.padding.top + p.pos;
-        let mut pos = Vec2::new(p.padding.left, p.padding.top) + p.pos;
-
-        let mut child_id = p.first;
-        while !child_id.is_null() {
-            let n = self.cached_node_mut(child_id);
-            child_id = n.next;
-
-            n.pos = pos;
-
-            match p.layout_direction {
-                Axis::X => pos.x += n.size.x + p.child_gap,
-                Axis::Y => pos.y += n.size.y + p.child_gap,
-            }
-        }
-    }
-
-    pub fn pop_parent(&mut self) {
-        self.id_stack.pop();
-        if let Some(n) = self.node_stack.pop() {
-            let mut n = self.node_fit_sizing(n);
-
-            if n.parent.is_null() {
-                self.node_grow_elements_along_axis(&n, Axis::X);
-                self.node_grow_elements_along_axis(&n, Axis::Y);
-
-                if let Some(p) = n.fixed_pos {
-                    n.pos = p;
-                }
-                self.node_compute_element_positions(&n);
-                self.roots.push(n.id);
-            }
-
-            self.cached_nodes.insert(n.id, n);
-        }
-    }
-
-    pub fn push_parent(&mut self, p: Node) {
-        self.id_stack.push(p.id);
-        self.node_stack.push(p);
-    }
-
-    pub fn parent_node(&self) -> Option<&Node> {
-        self.node_stack.last()
-    }
-
-    pub fn parent_node_mut(&mut self) -> Option<&mut Node> {
-        self.node_stack.last_mut()
-    }
-
-    pub fn prune_nodes(&mut self) {
-        self.cached_nodes.retain(|_, n| {
-            n.last_frame_used == self.frame_index
-        })
-    }
-
-    pub fn take_or_init_node(&mut self, id: NodeId) -> (Node, bool) {
-        if let Some(n) = self.cached_nodes.remove(&id) {
-            (n, false)
-        } else {
-            let mut n = Node::NULL;
-            n.id = id;
-            (n, true)
-        }
-    }
-
-    pub fn build_node_from_id(&mut self, id: NodeId) -> Node {
-        let (mut n, _is_new) = self.take_or_init_node(id);
-
-        n.next = NodeId::NULL;
-        n.prev = NodeId::NULL;
-
-        n.n_children = 0;
-        n.first = NodeId::NULL;
-        n.last = NodeId::NULL;
-        n.parent = NodeId::NULL;
-
-        n.size = Vec2::ZERO;
-        n.pos = Vec2::ZERO;
-
-        n.last_frame_used = self.frame_index;
-
-        if let Some(p) = self.parent_node_mut() {
-            if p.first.is_null() {
-                // first child
-                p.first = n.id;
-                p.last = n.id;
-            } else if !p.last.is_null() {
-                n.prev = p.last;
-            }
-
-            p.last = n.id;
-            n.parent = p.id;
-            p.n_children += 1;
-        }
-
-        if !n.prev.is_null() {
-            self.cached_nodes.get_mut(&n.prev).unwrap().next = n.id;
-        }
-
-        n
-    }
-
-    pub fn build_node_from_str(&mut self, str: &str) -> Node {
-        let id = self.node_id_from_str(str);
-        self.build_node_from_id(id)
-    }
-
-    pub fn begin_node(&mut self, s: &str, f: impl FnOnce(Node) -> Node) {
-        let n = self.build_node_from_str(s);
-        self.push_parent(f(n));
-    }
-
-    pub fn end_node(&mut self) {
-        self.pop_parent();
-    }
-
-    pub fn finish(&mut self) -> Vec<RectInst> {
-        if !self.node_stack.is_empty() {
-            log::error!("node stack not empty at the end of the frame");
-            panic!();
-        }
-
-        let mut rects = vec![];
-
-        let mut nodes: VecDeque<_> = self.roots.drain(..).collect();
-
-
-        while let Some(id) = nodes.pop_back() {
-            let n = self.cached_node(id);
-            rects.push(n.as_rect_inst());
-
-            let mut child_id = n.first;
-            while !child_id.is_null() {
-                nodes.push_front(child_id);
-                let c = self.cached_node(id);
-                child_id = c.next;
-            }
-        }
-        // for &id in &self.roots {
-        // }
-
-        self.roots.clear();
-
-        rects
-    }
-}
-
+// #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// pub struct MouseState {
+//     pub left: bool,
+//     pub middle: bool,
+//     pub right: bool,
+// }
+
+// impl ops::Index<MouseButton> for MouseState {
+//     type Output = bool;
+
+//     fn index(&self, index: MouseButton) -> &Self::Output {
+//         match index {
+//             MouseButton::Left => &self.left,
+//             MouseButton::Right => &self.right,
+//             MouseButton::Middle => &self.middle,
+//         }
+//     }
+// }
+
+// impl ops::IndexMut<MouseButton> for MouseState {
+//     fn index_mut(&mut self, index: MouseButton) -> &mut Self::Output {
+//         match index {
+//             MouseButton::Left => &mut self.left,
+//             MouseButton::Right => &mut self.right,
+//             MouseButton::Middle => &mut self.middle,
+//         }
+//     }
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
@@ -685,7 +260,7 @@ impl RectRender {
     pub fn update_window_size(&mut self, width: u32, height: u32) {
         let aspect = width as f32 / height.max(1) as f32;
         self.global_data.proj =
-            Mat4::orthographic_lh(0.0, width as f32, 0.0, height as f32, -1.0, 1.0);
+            Mat4::orthographic_lh(0.0, width as f32, height as f32, 0.0, -1.0, 1.0);
     }
 
     pub fn update_rect_instances(&mut self, rect_instances: &[RectInst], wgpu: &WGPU) {
@@ -696,7 +271,8 @@ impl RectRender {
             //         contents: bytemuck::cast_slice(rect_instances),
             //         usage: wgpu::BufferUsages::VERTEX,
             //     });
-            wgpu.queue.write_buffer(&self.rect_buffer, 0, bytemuck::cast_slice(rect_instances));
+            wgpu.queue
+                .write_buffer(&self.rect_buffer, 0, bytemuck::cast_slice(rect_instances));
             self.n_instances = rect_instances.len() as u32;
         }
     }
@@ -714,14 +290,12 @@ impl RectRender {
         //         color: RGBA::BLUE,
         //     },
         // ];
-        let rect_buffer = wgpu
-            .device
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: Some("rect_instances"),
-                size: 1024 * std::mem::size_of::<RectInst>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+        let rect_buffer = wgpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rect_instances"),
+            size: 1024 * std::mem::size_of::<RectInst>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         // let rect_buffer = wgpu
         //     .device
         //     .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -729,8 +303,6 @@ impl RectRender {
         //         contents: bytemuck::cast_slice(&vertices),
         //         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         //     });
-
-
 
         let vertices = [
             Vertex2D {
@@ -781,7 +353,6 @@ impl RectRender {
             global_data,
         }
     }
-
 
     pub fn build_global_bind_group(&self, wgpu: &WGPU) -> wgpu::BindGroup {
         let global_uniform = wgpu
@@ -922,5 +493,855 @@ impl ShaderHandle for RectShader {
             .vertex_buffers(&vertices)
             .bind_groups(&[&global_bind_group_layout])
             .build(&wgpu.device)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Widget {
+    pub id: WidgetId,
+    pub rect: Option<Rect>,
+    pub flags: WidgetFlags,
+    pub last_frame: u64,
+
+    pub color: RGBA,
+    pub style: LayoutStyle,
+    pub children: Vec<WidgetId>,
+}
+
+impl Widget {
+    pub fn new(id: WidgetId) -> Self {
+        Self {
+            id,
+            rect: None,
+            flags: WidgetFlags::NONE,
+            last_frame: 0,
+            color: RGBA::ZERO,
+            style: LayoutStyle::default(),
+            children: Vec::new(),
+        }
+    }
+
+    pub fn size(&self) -> Option<Vec2> {
+        self.rect.map(|r| r.max - r.min)
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub enum PositionTyp {
+    #[default]
+    Auto,
+    Absolute(Vec2),
+    Relative(Vec2),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LayoutStyle {
+    pub direction: Axis,
+    pub padding: Padding,
+    pub spacing: f32,
+    pub width: SizingTyp,
+    pub height: SizingTyp,
+    pub position: PositionTyp,
+    pub min_size: Vec2,
+    pub max_size: Vec2,
+}
+
+impl LayoutStyle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn direction(mut self, a: Axis) -> Self {
+        self.direction = a;
+        self
+    }
+
+    pub fn fixed_x(mut self, x: f32) -> Self {
+        self.width = SizingTyp::Fixed(x);
+        self
+    }
+
+    pub fn fixed_y(mut self, x: f32) -> Self {
+        self.height = SizingTyp::Fixed(x);
+        self
+    }
+
+    pub fn fixed(self, x: f32, y: f32) -> Self {
+        self.fixed_x(x).fixed_y(y)
+    }
+
+    pub fn pad_vert(mut self, p: f32) -> Self {
+        self.padding.left = p;
+        self.padding.right = p;
+        self
+    }
+
+    pub fn pad_hor(mut self, p: f32) -> Self {
+        self.padding.top = p;
+        self.padding.bottom = p;
+        self
+    }
+
+    pub fn padding(mut self, p: f32) -> Self {
+        self.padding = Padding::all(p);
+        self
+    }
+
+    pub fn spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+
+    pub fn fit_x(mut self) -> Self {
+        self.width = SizingTyp::Fit;
+        self
+    }
+
+    pub fn grow_x(mut self) -> Self {
+        self.width = SizingTyp::Grow;
+        self
+    }
+
+    pub fn grow_y(mut self) -> Self {
+        self.height = SizingTyp::Grow;
+        self
+    }
+
+    pub fn grow(self) -> Self {
+        self.grow_x().grow_y()
+    }
+
+    pub fn fit_y(mut self) -> Self {
+        self.height = SizingTyp::Fit;
+        self
+    }
+
+    pub fn fit(mut self) -> Self {
+        self.fit_x().fit_y()
+    }
+
+    pub fn absolute(mut self, x: f32, y: f32) -> Self {
+        self.position = PositionTyp::Absolute(Vec2::new(x, y));
+        self
+    }
+
+    pub fn relative(mut self, x: f32, y: f32) -> Self {
+        self.position = PositionTyp::Relative(Vec2::new(x, y));
+        self
+    }
+
+    pub fn auto_position(mut self) -> Self {
+        self.position = PositionTyp::Auto;
+        self
+    }
+}
+
+impl Default for LayoutStyle {
+    fn default() -> Self {
+        Self {
+            direction: Axis::X,
+            padding: Padding::all(4.0),
+            spacing: 2.0,
+            width: SizingTyp::Fit,
+            height: SizingTyp::Fit,
+            min_size: Vec2::ZERO,
+            max_size: Vec2::INFINITY,
+            position: PositionTyp::Auto,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LayoutNode {
+    pub id: WidgetId,
+    pub computed_size: Vec2,
+    pub computed_pos: Vec2,
+    pub children: Vec<LayoutNode>,
+}
+
+
+#[derive(Debug, Clone)]
+pub struct State {
+    pub widgets: FxHashMap<WidgetId, Widget>,
+    pub current_frame: u64,
+    pub id_stack: Vec<WidgetId>,
+    pub mouse: MouseState,
+    pub hot_widget: WidgetId,
+    pub active_widget: WidgetId,
+    pub keyboard_focus: WidgetId,
+    pub output_rects: Vec<RectInst>,
+    pub layout_root: Option<LayoutNode>,
+    pub screen_size: Vec2,
+}
+
+impl State {
+    pub fn new() -> Self {
+        Self {
+            widgets: FxHashMap::default(),
+            current_frame: 0,
+            id_stack: Vec::new(),
+            mouse: MouseState::new(),
+            hot_widget: WidgetId::NULL,
+            active_widget: WidgetId::NULL,
+            keyboard_focus: WidgetId::NULL,
+            output_rects: Vec::new(),
+            layout_root: None,
+            screen_size: Vec2::ZERO,
+        }
+    }
+
+    pub fn set_screen_size(&mut self, size: Vec2) {
+        self.screen_size = size;
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.current_frame += 1;
+        self.output_rects.clear();
+        self.hot_widget = WidgetId::NULL;
+    }
+
+    pub fn end_frame(&mut self) {
+        let current_frame = self.current_frame;
+        self.widgets
+            .retain(|_, widget| current_frame - widget.last_frame < 5);
+
+        if let Some(root) = self.layout_root.clone() {
+            self.apply_layout(&root);
+        }
+
+        self.generate_render_rects();
+    }
+
+    pub fn generate_render_rects(&mut self) {
+        
+        for (&id, widget) in &self.widgets {
+            if let Some(r) = widget.rect {
+                let min = r.min;
+                let max = r.max;
+                let color = widget.color;
+
+                self.output_rects.push(RectInst {
+                    min,
+                    max,
+                    color,
+                });
+            }
+        }
+    }
+
+    pub fn push_id(&mut self, id: WidgetId) {
+        self.id_stack.push(id);
+    }
+
+    pub fn pop_id(&mut self) {
+        self.id_stack.pop();
+    }
+
+    pub fn current_id(&self) -> Option<WidgetId> {
+        self.id_stack.last().copied()
+    }
+
+    pub fn build_id(&self, name: &str) -> WidgetId {
+        use std::hash::{Hash, Hasher};
+        if let Some(p_id) = self.current_id() {
+            let mut hasher = rustc_hash::FxHasher::with_seed(p_id.0 as usize);
+            name.hash(&mut hasher);
+            WidgetId(hasher.finish())
+        } else {
+            WidgetId::from_str(name)
+        }
+    }
+
+    pub fn begin_widget(&mut self, name: &str) -> WidgetId {
+        let id = self.build_id(name);
+
+        let widget = self.widgets.entry(id).or_insert(Widget::new(id));
+        widget.last_frame = self.current_frame;
+        widget.children.clear();
+
+        self.push_id(id);
+        id
+    }
+
+    // pub fn end_widget(&mut self) {
+    //     self.pop_id();
+    // }
+
+    pub fn set_widget_style(&mut self, id: WidgetId, style: LayoutStyle) {
+        if let Some(widget) = self.widgets.get_mut(&id) {
+            widget.style = style;
+        }
+    }
+
+    pub fn set_widget_color(&mut self, id: WidgetId, color: RGBA) {
+        if let Some(widget) = self.widgets.get_mut(&id) {
+            widget.color = color;
+        }
+    }
+
+    pub fn set_widget_flags(&mut self, id: WidgetId, flags: WidgetFlags) {
+        if let Some(widget) = self.widgets.get_mut(&id) {
+            widget.flags = flags;
+        }
+    }
+
+    pub fn set_widget_position(&mut self, id: WidgetId, position: PositionTyp) {
+        if let Some(widget) = self.widgets.get_mut(&id) {
+            widget.style.position = position;
+        }
+    }
+
+    fn calculate_layout(&self, id: WidgetId, available_size: Vec2) -> LayoutNode {
+        let widget = &self.widgets[&id];
+        let style = &widget.style;
+
+        let mut computed_size = Vec2::ZERO;
+
+        // Size calculation (same as before)
+        match style.width {
+            SizingTyp::Null => todo!(),
+            SizingTyp::Fit => (),
+            SizingTyp::Grow => computed_size.x = available_size.x,
+            SizingTyp::Fixed(w) => computed_size.x = w,
+            SizingTyp::Percent(p) => computed_size.x = available_size.x * p,
+        }
+
+        match style.height {
+            SizingTyp::Null => todo!(),
+            SizingTyp::Fit => (),
+            SizingTyp::Grow => computed_size.y = available_size.y,
+            SizingTyp::Fixed(w) => computed_size.y = w,
+            SizingTyp::Percent(p) => computed_size.y = available_size.y * p,
+        }
+
+        let mut children_nodes = Vec::new();
+        let mut content_size = Vec2::ZERO;
+        let child_available = computed_size - style.padding.axis_sum();
+
+        // Only auto-positioned children contribute to layout flow
+        let auto_children: Vec<_> = widget.children.iter()
+            .filter(|&&child_id| {
+                matches!(self.widgets[&child_id].style.position, PositionTyp::Auto)
+            })
+            .copied()
+            .collect();
+
+        // Calculate layout for auto children
+        for &child_id in &auto_children {
+            let child_node = self.calculate_layout(child_id, child_available);
+
+            match style.direction {
+                Axis::Y => { // Vertical layout
+                    content_size.x = content_size.x.max(child_node.computed_size.x);
+                    content_size.y += child_node.computed_size.y;
+                    if !children_nodes.is_empty() {
+                        content_size.y += style.spacing;
+                    }
+                }
+                Axis::X => { // Horizontal layout
+                    content_size.x += child_node.computed_size.x;
+                    content_size.y = content_size.y.max(child_node.computed_size.y);
+                    if !children_nodes.is_empty() {
+                        content_size.x += style.spacing;
+                    }
+                }
+            }
+
+            children_nodes.push(child_node);
+        }
+
+        // Calculate layout for positioned children (they don't affect parent size)
+        for &child_id in &widget.children {
+            let child_widget = &self.widgets[&child_id];
+            if !matches!(child_widget.style.position, PositionTyp::Auto) {
+                let child_node = self.calculate_layout(child_id, self.screen_size);
+                children_nodes.push(child_node);
+            }
+        }
+
+        // Apply fit sizing based on auto children only
+        if matches!(style.width, SizingTyp::Fit) {
+            computed_size.x = content_size.x + style.padding.sum_along_axis(Axis::X);
+        }
+
+        if matches!(style.height, SizingTyp::Fit) {
+            computed_size.y = content_size.y + style.padding.sum_along_axis(Axis::Y);
+        }
+
+        computed_size = computed_size.clamp(style.min_size, style.max_size);
+
+        LayoutNode {
+            id,
+            computed_size,
+            computed_pos: Vec2::ZERO,
+            children: children_nodes,
+        }
+    }
+
+
+
+    // Replace your apply_layout_recursive method with this:
+    pub fn apply_layout_recursive(&mut self, node: &LayoutNode, parent_pos: Vec2) {
+        let widget = self.widgets.get_mut(&node.id).unwrap();
+        let pos = parent_pos + node.computed_pos;
+        widget.rect = Some(Rect::from_min_max(pos, pos + node.computed_size));
+
+        let style = widget.style.clone();
+        let content_origin = pos + Vec2::new(style.padding.left, style.padding.top);
+        let mut auto_child_pos = content_origin;
+        
+        for child_node in &node.children {
+            let child_widget = &self.widgets[&child_node.id];
+            let mut positioned_child = child_node.clone();
+
+            match child_widget.style.position {
+                PositionTyp::Auto => {
+                    // Use automatic layout positioning
+                    positioned_child.computed_pos = auto_child_pos - parent_pos;
+                    self.apply_layout_recursive(&positioned_child, parent_pos);
+
+                    // Update position for next auto child
+                    match style.direction {
+                        Axis::Y => {
+                            auto_child_pos.y += child_node.computed_size.y + style.spacing;
+                        }
+                        Axis::X => {
+                            auto_child_pos.x += child_node.computed_size.x + style.spacing;
+                        }
+                    }
+                }
+                PositionTyp::Absolute(abs_pos) => {
+                    // Absolute positioning from screen origin
+                    positioned_child.computed_pos = abs_pos;
+                    self.apply_layout_recursive(&positioned_child, Vec2::ZERO);
+                }
+                PositionTyp::Relative(rel_pos) => {
+                    // Relative to parent's content area
+                    positioned_child.computed_pos = content_origin + rel_pos - parent_pos;
+                    self.apply_layout_recursive(&positioned_child, parent_pos);
+                }
+            }
+        }
+    }
+
+    // fn calculate_layout(&self, id: WidgetId, available_size: Vec2) -> LayoutNode {
+    //     let widget = &self.widgets[&id];
+    //     let style = &widget.style;
+
+    //     let mut computed_size = Vec2::ZERO;
+
+    //     match style.width {
+    //         SizingTyp::Null => todo!(),
+    //         SizingTyp::Fit => (),
+    //         SizingTyp::Grow => computed_size.x = available_size.x,
+    //         SizingTyp::Fixed(w) => computed_size.x = w,
+    //         SizingTyp::Percent(p) => computed_size.x = available_size.x * p,
+    //     }
+
+    //     match style.height {
+    //         SizingTyp::Null => todo!(),
+    //         SizingTyp::Fit => (),
+    //         SizingTyp::Grow => computed_size.y = available_size.y,
+    //         SizingTyp::Fixed(w) => computed_size.y = w,
+    //         SizingTyp::Percent(p) => computed_size.y = available_size.y * p,
+    //     }
+
+    //     let mut children_nodes = Vec::new();
+    //     let mut content_size = Vec2::ZERO;
+    //     let child_available = computed_size - style.padding.axis_sum();
+
+    //     for &child_id in &widget.children {
+    //         let child_node = self.calculate_layout(child_id, child_available);
+
+    //         match style.direction {
+    //             Axis::X => {
+    //                 content_size.x = content_size.x.max(child_node.computed_size.x);
+    //                 content_size.y += child_node.computed_size.y;
+    //                 if !children_nodes.is_empty() {
+    //                     content_size.y += style.spacing;
+    //                 }
+    //             }
+    //             Axis::Y => {
+    //                 content_size.x += child_node.computed_size.x;
+    //                 content_size.y += content_size.y.max(child_node.computed_size.y);
+    //                 if !children_nodes.is_empty() {
+    //                     content_size.x += style.spacing;
+    //                 }
+    //             }
+    //         }
+
+    //         children_nodes.push(child_node);
+    //     }
+
+    //     if matches!(style.width, SizingTyp::Fit) {
+    //         computed_size.x = content_size.x + style.padding.sum_along_axis(Axis::X) * 2.0;
+    //     }
+
+    //     if matches!(style.height, SizingTyp::Fit) {
+    //         computed_size.y = content_size.y + style.padding.sum_along_axis(Axis::Y) * 2.0;
+    //     }
+
+    //     computed_size = computed_size.clamp(style.min_size, style.max_size);
+
+    //     LayoutNode {
+    //         id,
+    //         computed_size,
+    //         computed_pos: Vec2::ZERO,
+    //         children: children_nodes,
+    //     }
+    // }
+
+    pub fn apply_layout(&mut self, root: &LayoutNode) {
+        self.apply_layout_recursive(root, Vec2::ZERO)
+    }
+
+    // pub fn apply_layout_recursive(&mut self, node: &LayoutNode, parent_pos: Vec2) {
+    //     let widget = self.widgets.get_mut(&node.id).unwrap();
+    //     let pos = parent_pos + node.computed_pos;
+    //     widget.rect = Some(Rect::from_min_max(pos, pos + node.computed_size));
+
+    //     let style = widget.style.clone();
+    //     let mut child_pos = pos + Vec2::new(style.padding.left, style.padding.top); // TODO:
+    //     // correct?
+    //     for child_node in &node.children {
+    //         let mut positioned_child = child_node.clone();
+    //         positioned_child.computed_pos = child_pos - parent_pos;
+
+    //         self.apply_layout_recursive(&positioned_child, parent_pos);
+
+    //         match style.direction {
+    //             Axis::X => {
+    //                 child_pos.y += child_node.computed_size.y + style.spacing;
+    //             }
+    //             Axis::Y => {
+    //                 child_pos.x += child_node.computed_size.x + style.spacing;
+    //             }
+    //         }
+    //     }
+    // }
+
+    pub fn get_widget_signal(&self, widget_id: WidgetId) -> SignalFlags {
+        let mut signals = SignalFlags::empty();
+
+        if let Some(widget) = self.widgets.get(&widget_id) {
+            if let Some(r) = widget.rect {
+                let mouse_over = r.contains(self.mouse.mouse_pos);
+                let was_mouse_over = r.contains(self.mouse.prev_pos);
+
+                if mouse_over {
+                    signals = SignalFlags::MOUSE_OVER;
+                }
+            }
+        }
+        signals
+    }
+
+    pub fn get_render_rects(&self) -> &[RectInst] {
+        &self.output_rects
+    }
+
+    pub fn begin_at_w_size(&mut self, name: &str, pos: Vec2, size: Vec2) -> WidgetId {
+        let id = self.begin_widget(name);
+
+        self.set_widget_style(id, LayoutStyle::new().fixed(size.x, size.y).absolute(pos.x, pos.y).padding(8.0).spacing(4.0).direction(Axis::X));
+
+        id
+    }
+
+    pub fn begin_window(&mut self) -> WidgetId {
+        let id = self.begin_widget("window_root");
+
+        self.set_widget_style(id, LayoutStyle::new().fixed(self.screen_size.x, self.screen_size.y).padding(8.0).spacing(4.0).direction(Axis::X));
+        id
+    }
+
+    pub fn begin_grow(&mut self, name: &str) -> WidgetId {
+        let id = self.begin_widget(name);
+
+        self.set_widget_style(id, LayoutStyle::new().grow().padding(8.0).spacing(4.0).direction(Axis::X));
+
+        id
+    }
+
+    pub fn begin_fit(&mut self, name: &str) -> WidgetId {
+        let id = self.begin_widget(name);
+
+        self.set_widget_style(id, LayoutStyle::new().fit().padding(8.0).spacing(4.0).direction(Axis::X));
+
+        id
+    }
+
+    pub fn end_widget(&mut self) {
+        if let Some(container_id) = self.current_id() {
+            let available_size = self.screen_size;
+            let layout = self.calculate_layout(container_id, available_size);
+            self.layout_root = Some(layout);
+        }
+        self.pop_id();
+    }
+
+    pub fn button(&mut self, text: &str) -> SignalFlags {
+        let parent = self.id_stack.last().copied();
+
+        let id = self.begin_widget(text);
+
+        if let Some(p_id) = parent {
+            if let Some(p) = self.widgets.get_mut(&p_id) {
+                p.children.push(id);
+            }
+        }
+
+        self.set_widget_style(
+            id,
+            LayoutStyle::new()
+                .fixed(100.0, 30.0)
+                .pad_vert(8.0)
+                .pad_hor(4.0),
+        );
+        self.set_widget_color(id, RGBA::BLUE);
+
+        let signals = self.get_widget_signal(id);
+
+        self.end_widget();
+        signals
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Default)]
+pub struct PerButton<T>(pub [T; 3]);
+
+impl<T> ops::Index<MouseButton> for PerButton<T> {
+    type Output = T;
+
+    fn index(&self, index: MouseButton) -> &Self::Output {
+        &self.0[index as usize]
+    }
+}
+
+impl<T> ops::IndexMut<MouseButton> for PerButton<T> {
+    fn index_mut(&mut self, index: MouseButton) -> &mut Self::Output {
+        &mut self.0[index as usize]
+    }
+}
+
+
+// #[derive(Clone, Copy, Default, PartialEq)]
+// struct ButtonState {
+//     pressed: bool,
+//     double_press: bool,
+//     press_start_pos: Vec2,
+//     press_time: Option<Instant>,
+//     last_press_time: Option<Instant>,
+//     dragging: bool,
+// }
+
+#[derive(Clone, Copy, Default, PartialEq)]
+struct ButtonState {
+    pressed: bool,
+    double_press: bool,
+    press_start_pos: Vec2,
+    press_time: Option<Instant>,
+    last_release_time: Option<Instant>,
+    last_press_was_short: bool,
+    dragging: bool,
+}
+
+impl fmt::Display for ButtonState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status = if self.dragging {
+            "dragging"
+        } else if self.pressed {
+            "pressed"
+        } else {
+            "released"
+        };
+        
+        write!(f, "{}", status)?;
+        
+        if self.pressed {
+            write!(f, " @({:.1}, {:.1})", self.press_start_pos.x, self.press_start_pos.y)?;
+            if let Some(press_time) = self.press_time {
+                write!(f, " {}ms", press_time.elapsed().as_millis())?;
+            }
+        }
+        
+        // Show if this is a double click
+        if self.double_press {
+            write!(f, " [DOUBLE]")?;
+        }
+        // if self.pressed {
+        //     if let (Some(press_time), Some(last_press)) = (self.press_time, self.last_press_time) {
+        //         if press_time > last_press && press_time.duration_since(last_press) < Duration::from_millis(300) {
+        //             write!(f, " [DOUBLE]")?;
+        //         }
+        //     }
+        // }
+        
+        Ok(())
+    }
+}
+
+impl fmt::Debug for ButtonState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct MouseState {
+    pub mouse_pos: Vec2,
+    prev_pos: Vec2,
+    buttons: PerButton<ButtonState>,
+    
+    // Configuration
+    double_click_time: Duration,
+    drag_threshold: f32,
+}
+
+impl Default for MouseState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MouseState {
+    pub fn new() -> Self {
+        Self {
+            mouse_pos: Vec2::ZERO,
+            prev_pos: Vec2::ZERO,
+            buttons: PerButton::default(),
+            double_click_time: Duration::from_millis(150),
+            drag_threshold: 5.0,
+        }
+    }
+    
+    pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
+        self.prev_pos = self.mouse_pos;
+        self.mouse_pos = Vec2::new(x, y);
+        
+        // Update drag states for all pressed buttons
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            let state = &mut self.buttons[button];
+            if state.pressed && !state.dragging {
+                let distance = self.mouse_pos.distance(state.press_start_pos);
+                if distance > self.drag_threshold {
+                    state.dragging = true;
+                }
+            }
+        }
+    }
+
+    pub fn set_button_press(&mut self, button: MouseButton, pressed: bool) {
+        let state = &mut self.buttons[button];
+        let was_pressed = state.pressed;
+
+        if pressed && !was_pressed {
+            let now = Instant::now();
+            state.pressed = true;
+            state.press_start_pos = self.mouse_pos;
+            state.press_time = Some(now);
+            state.dragging = false;
+
+            state.double_press = if let Some(last_release) = state.last_release_time {
+                now.duration_since(last_release) <= self.double_click_time && state.last_press_was_short
+            } else {
+                false
+            };
+
+        } else if !pressed && was_pressed {
+            let now = Instant::now();
+            state.pressed = false;
+            state.dragging = false;
+
+            if let Some(press_time) = state.press_time {
+                let press_duration = now.duration_since(press_time);
+                state.last_press_was_short = press_duration <= self.double_click_time;
+            } else {
+                state.last_press_was_short = false;
+            }
+
+            state.last_release_time = Some(now);
+            state.press_time = None;
+            state.double_press = false;
+        }
+    }
+
+    
+    // pub fn set_button_press(&mut self, button: MouseButton, pressed: bool) {
+    //     let state = &mut self.buttons[button];
+    //     let was_pressed = state.pressed;
+        
+    //     if pressed && !was_pressed {
+    //         // Button just pressed
+    //         state.pressed = true;
+    //         state.press_start_pos = self.mouse_pos;
+    //         state.press_time = Some(Instant::now());
+    //         state.dragging = false;
+
+
+    //         if let (Some(press_time), Some(last_press_time)) = (state.press_time, state.last_press_time) {
+    //             // Check if this press happened soon after the last release
+    //             if press_time.duration_since(last_press_time) < self.double_click_time {
+    //                 state.double_press = true;
+    //             }
+    //         } else {
+    //             state.double_press = false;
+    //         }
+
+    //     } else if !pressed && was_pressed {
+    //         // Button just released
+    //         state.pressed = false;
+    //         state.dragging = false;
+    //         state.last_press_time = state.press_time;
+    //         state.press_time = None;
+    //         state.double_press = false;
+
+    //     }
+    // }
+
+    // Public getters
+    pub fn drag_delta(&self) -> Vec2 {
+        self.mouse_pos - self.prev_pos
+    }
+
+    // Button state queries
+    pub fn pressed(&self, button: MouseButton) -> bool {
+        self.buttons[button].pressed
+    }
+    
+    pub fn dragging(&self, button: MouseButton) -> bool {
+        self.buttons[button].dragging
+    }
+    
+    pub fn drag_start(&self, button: MouseButton) -> Vec2 {
+        self.buttons[button].press_start_pos
+    }
+    
+    pub fn just_pressed(&self, button: MouseButton) -> bool {
+        let state = &self.buttons[button];
+        state.pressed && state.press_time.map_or(false, |t| t.elapsed() < Duration::from_millis(16))
+    }
+    
+    pub fn double_clicked(&self, button: MouseButton) -> bool {
+        self.buttons[button].double_press
+    }
+    
+    
+}
+
+impl fmt::Display for MouseState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "MouseState {{")?;
+        writeln!(f, "  pos: ({:.1}, {:.1})", self.mouse_pos.x, self.mouse_pos.y)?;
+        
+        let delta = self.drag_delta();
+        if delta.x != 0.0 || delta.y != 0.0 {
+            writeln!(f, "  delta: ({:.1}, {:.1})", delta.x, delta.y)?;
+        }
+        
+        writeln!(f, "  left: {}", self.buttons[MouseButton::Left])?;
+        writeln!(f, "  right: {}", self.buttons[MouseButton::Right])?;
+        writeln!(f, "  middle: {}", self.buttons[MouseButton::Middle])?;
+        write!(f, "}}")
     }
 }
