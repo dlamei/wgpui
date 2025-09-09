@@ -18,12 +18,6 @@ pub extern crate self as wgpui;
 pub use gpu::AsVertexFormat;
 pub use gpu::Vertex;
 
-// vertex_struct!(VertexPosCol {
-//     pos: Vec4,
-//     col: RGBA,
-// });
-//
-
 #[vertex]
 pub struct VertexPosCol {
     pub pos: Vec4,

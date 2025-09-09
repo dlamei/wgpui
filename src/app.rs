@@ -135,7 +135,7 @@ impl ApplicationHandler for AppSetup {
 
 pub struct App {
     draw_list: ui::DrawList,
-    ui_state: ui::State,
+    ui: ui::State,
 
     dbg_wireframe: bool,
     renderer: Renderer,
@@ -153,7 +153,7 @@ impl App {
     pub fn new(renderer: Renderer, window: impl Into<Arc<Window>>) -> Self {
         let window: Arc<_> = window.into();
         Self {
-            ui_state: ui::State::new(window.clone()),
+            ui: ui::State::new(window.clone()),
             draw_list: ui::DrawList::new(),
             dbg_wireframe: false,
             renderer,
@@ -207,9 +207,9 @@ impl App {
                 };
 
                 match button {
-                    MouseButton::Left => self.ui_state.set_mouse_press(MouseBtn::Left, state),
-                    MouseButton::Right => self.ui_state.set_mouse_press(MouseBtn::Right, state),
-                    MouseButton::Middle => self.ui_state.set_mouse_press(MouseBtn::Middle, state),
+                    MouseButton::Left => self.ui.set_mouse_press(MouseBtn::Left, state),
+                    MouseButton::Right => self.ui.set_mouse_press(MouseBtn::Right, state),
+                    MouseButton::Middle => self.ui.set_mouse_press(MouseBtn::Middle, state),
                     _ => (),
                 }
             }
@@ -230,30 +230,30 @@ impl App {
     }
 
     fn on_update(&mut self) {
-        self.ui_state
-            .set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
-        self.ui_state.begin_frame();
+        self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
 
-        self.ui_state.add_frame(
-            "c",
-            Vec2::new(50.0, 200.0),
-            Vec2::new(400.0, 300.0),
-            ui::FrameStyle {
-                fill: ui::StateStyle {
-                    default: RGBA::hex("#242933"),
-                    active: RGBA::hex("#242933"),
-                    hovered: RGBA::hex("#242933"),
-                },
-                outline: ui::StateStyle {
-                    default: RGBA::hex("#242933"),
-                    hovered: RGBA::hex("#832161"),
-                    active: RGBA::hex("#DA4167"),
-                },
-            },
-        );
-        self.ui_state.end_widget();
+        self.ui.begin_frame();
 
-        let signal = self.ui_state.begin_widget(
+        // self.ui.add_frame(
+        //     "c",
+        //     Vec2::new(50.0, 200.0),
+        //     Vec2::new(400.0, 300.0),
+        //     ui::FrameStyle {
+        //         fill: ui::StateStyle {
+        //             default: RGBA::hex("#242933"),
+        //             active: RGBA::hex("#242933"),
+        //             hovered: RGBA::hex("#242933"),
+        //         },
+        //         outline: ui::StateStyle {
+        //             default: RGBA::hex("#242933"),
+        //             hovered: RGBA::hex("#832161"),
+        //             active: RGBA::hex("#DA4167"),
+        //         },
+        //     },
+        // );
+        // self.ui.end_widget();
+
+        let signal = self.ui.begin_widget(
             "a",
             WidgetOpt::new()
                 .fill(RGBA::INDIGO)
@@ -264,15 +264,50 @@ impl App {
                 .corner_radius(10.0)
                 .outline(RGBA::MAGENTA, 5.0)
                 .pos_fix(100.0, 100.0)
-                .size_fix(500.0, 300.0),
+                .size_fit()
+                // .size_fix(500.0, 300.0)
+                // .size_fit_x(),
         );
 
-        if self.ui_state.add_button("hello") {
+        if self.ui.add_button("hello") {
             println!("hello");
         }
-        if self.ui_state.add_button("tes") {
+        if self.ui.add_button("tes") {
             println!("tes");
         }
+
+        self.ui.begin_widget(
+            "c",
+            WidgetOpt::new()
+                .fill(RGBA::RED)
+                .draggable()
+                .spacing(40.0)
+                .padding(100.0)
+                .resizable()
+                .corner_radius(10.0)
+                .outline(RGBA::MAGENTA, 5.0)
+                .size_fit()
+        );
+        let signal = self.ui.begin_widget(
+            "c",
+            WidgetOpt::new()
+                .fill(RGBA::GREEN)
+                .draggable()
+                .clickable()
+                .spacing(40.0)
+                .padding(100.0)
+                .resizable()
+                .corner_radius(10.0)
+                .outline(RGBA::MAGENTA, 5.0)
+                .size_fit()
+        );
+
+        if signal.released() {
+            println!("inner rect released");
+        }
+
+        self.ui.end_widget();
+        self.ui.end_widget();
 
         // self.ui_state.add_widget(
         //     "b",
@@ -283,10 +318,29 @@ impl App {
         // );
 
         // self.ui_state.end_widget();
-        self.ui_state.end_widget();
+        self.ui.end_widget();
 
-        self.ui_state.draw_dbg_wireframe = self.dbg_wireframe;
-        self.ui_state.end_frame();
+        self.ui.begin_widget(
+            "d",
+            WidgetOpt::new()
+                .fill(RGBA::BLUE)
+                .draggable()
+                .spacing(40.0)
+                .padding(100.0)
+                .resizable()
+                .corner_radius(10.0)
+                .outline(RGBA::RED, 5.0)
+                .pos_fix(100.0, 100.0)
+                .size_fit()
+                // .size_fix(500.0, 300.0)
+                // .size_fit_x(),
+        );
+        self.ui.end_widget();
+
+
+
+        self.ui.draw_dbg_wireframe = self.dbg_wireframe;
+        self.ui.end_frame();
     }
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
@@ -334,7 +388,7 @@ impl App {
             let mut surface = self.renderer.surface_target();
             // surface.render(&ClearScreen("#242933".into()));
             surface.render(&ClearScreen(0.into()));
-            surface.render(&self.ui_state);
+            surface.render(&self.ui);
         }
 
         self.renderer.present_frame();

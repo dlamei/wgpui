@@ -726,7 +726,10 @@ impl WGPU {
             format: surface_format,
             width,
             height,
+            #[cfg(target_arch = "wasm32")]
             present_mode: wgpu::PresentMode::Fifo,
+            #[cfg(not(target_arch = "wasm32"))]
+            present_mode: wgpu::PresentMode::Immediate,
             alpha_mode: surface_capabilities.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
