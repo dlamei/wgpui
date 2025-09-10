@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 use glam::{UVec2, Vec2};
 use winit::{
@@ -13,12 +10,11 @@ use winit::{
 };
 
 use crate::{
-    ClearScreen, ColorTint, DbgTriangle, ShaderHandle, Vertex, VertexPosCol,
-    gpu::{Renderer, WGPU},
+    ClearScreen, Vertex, VertexPosCol,
+    gpu::Renderer,
     mouse::MouseBtn,
-    rect::Rect,
     ui::{self, WidgetOpt},
-    utils::{self, RGBA},
+    utils::{self, Duration, Instant, RGBA},
 };
 
 pub enum AppSetup {
@@ -77,6 +73,65 @@ impl AppSetup {
         *self = Self::Init(Self::init_app(window_handle, renderer));
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn resumed_wasm(&mut self, event_loop: &ActiveEventLoop) {
+        let mut attributes = winit::window::Window::default_attributes().with_title("Atlas");
+
+        use wasm_bindgen::JsCast;
+        use winit::platform::web::WindowAttributesExtWebSys;
+        let canvas = wgpu::web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .get_element_by_id("canvas")
+            .unwrap()
+            .dyn_into::<wgpu::web_sys::HtmlCanvasElement>()
+            .unwrap();
+        let canvas_width = canvas.width().max(1);
+        let canvas_height = canvas.height().max(1);
+        // self.last_size = (canvas_width, canvas_height).into();
+        attributes = attributes.with_canvas(Some(canvas));
+
+        if let Ok(new_window) = event_loop.create_window(attributes) {
+            if let Self::UnInit {
+                window,
+                renderer_rec,
+            } = self
+            {
+                let first_window_handle = window.is_none();
+                let window_handle = Arc::new(new_window);
+
+                if first_window_handle {
+                    let (sender, receiver) = futures::channel::oneshot::channel();
+                    // self.renderer_rec = Some(receiver);
+                    std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+
+                    console_log::init().expect("Failed to initialize logger!");
+                    log::info!("Canvas dimensions: ({canvas_width} x {canvas_height})");
+
+                    let window_handle_2 = window_handle.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let renderer =
+                            Renderer::new_async(window_handle_2, canvas_width, canvas_height).await;
+                        if sender.send(renderer).is_err() {
+                            log::error!("Failed to create and send renderer!");
+                        }
+                    });
+
+                    *window = Some(window_handle);
+                    *renderer_rec = Some(receiver);
+                }
+            }
+        }
+    }
+
+    fn init_unwrap(&mut self) -> &mut App {
+        match self {
+            AppSetup::Init(app) => app,
+            _ => panic!(),
+        }
+    }
+
     fn try_init(&mut self) -> Option<&mut App> {
         if let Self::Init(app) = self {
             return Some(app);
@@ -89,15 +144,20 @@ impl AppSetup {
                 renderer_rec,
             } = self
             else {
-                panic!();
+                unreachable!();
             };
             // let mut renderer_received = false;
+            use winit::platform::web::WindowExtWebSys;
             if let Some(receiver) = renderer_rec.as_mut() {
                 if let Ok(Some(renderer)) = receiver.try_recv() {
-                    *self = Self::Init(Self::init_app(window.as_ref().unwrap().clone(), renderer));
-                    if let Self::Init(app) = self {
-                        return Some(app);
-                    }
+                    let window = window.as_ref().unwrap().clone();
+                    window.set_prevent_default(false);
+                    window.request_redraw();
+                    let size = window.inner_size();
+                    *self = Self::Init(Self::init_app(window, renderer));
+                    let app = self.init_unwrap();
+                    app.resize(size.width, size.height);
+                    return Some(self.init_unwrap());
                 }
             }
         }
@@ -124,17 +184,9 @@ impl ApplicationHandler for AppSetup {
             app.on_window_event(event_loop, window_id, event);
         }
     }
-
-    // fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-    //         println!("waiting... ");
-    //     if let Some(app) = self.try_init() {
-    //         app.window.request_redraw();
-    //     }
-    // }
 }
 
 pub struct App {
-    draw_list: ui::DrawList,
     ui: ui::State,
 
     dbg_wireframe: bool,
@@ -153,8 +205,7 @@ impl App {
     pub fn new(renderer: Renderer, window: impl Into<Arc<Window>>) -> Self {
         let window: Arc<_> = window.into();
         Self {
-            ui: ui::State::new(window.clone()),
-            draw_list: ui::DrawList::new(),
+            ui: ui::State::new(renderer.wgpu.clone(), window.clone()),
             dbg_wireframe: false,
             renderer,
             prev_frame_time: Instant::now(),
@@ -231,42 +282,22 @@ impl App {
 
     fn on_update(&mut self) {
         self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+        self.ui.start_frame();
 
-        self.ui.begin_frame();
-
-        // self.ui.add_frame(
-        //     "c",
-        //     Vec2::new(50.0, 200.0),
-        //     Vec2::new(400.0, 300.0),
-        //     ui::FrameStyle {
-        //         fill: ui::StateStyle {
-        //             default: RGBA::hex("#242933"),
-        //             active: RGBA::hex("#242933"),
-        //             hovered: RGBA::hex("#242933"),
-        //         },
-        //         outline: ui::StateStyle {
-        //             default: RGBA::hex("#242933"),
-        //             hovered: RGBA::hex("#832161"),
-        //             active: RGBA::hex("#DA4167"),
-        //         },
-        //     },
-        // );
-        // self.ui.end_widget();
-
-        let signal = self.ui.begin_widget(
+        self.ui.begin_widget(
             "a",
             WidgetOpt::new()
                 .fill(RGBA::INDIGO)
                 .draggable()
                 .spacing(40.0)
                 .padding(100.0)
+                .size_min_fit()
+                .size_max_px(2000.0, 1300.0)
                 .resizable()
                 .corner_radius(10.0)
                 .outline(RGBA::MAGENTA, 5.0)
-                .pos_fix(100.0, 100.0)
-                .size_fit()
-                // .size_fix(500.0, 300.0)
-                // .size_fit_x(),
+                .pos_fix(100.0, 100.0), // .size_fit(), // .size_fix(500.0, 300.0)
+                                        // .size_fit_x(),
         );
 
         if self.ui.add_button("hello") {
@@ -277,29 +308,26 @@ impl App {
         }
 
         self.ui.begin_widget(
-            "c",
+            "d",
             WidgetOpt::new()
-                .fill(RGBA::RED)
-                .draggable()
+                .fill(RGBA::PASTEL_PURPLE)
                 .spacing(40.0)
-                .padding(100.0)
-                .resizable()
+                .padding(10.0)
+                .layout_h()
                 .corner_radius(10.0)
                 .outline(RGBA::MAGENTA, 5.0)
-                .size_fit()
+                .size_x_fit()
+                .size_y_fit(),
         );
-        let signal = self.ui.begin_widget(
+        let (_, signal) = self.ui.begin_widget(
             "c",
             WidgetOpt::new()
                 .fill(RGBA::GREEN)
-                .draggable()
                 .clickable()
-                .spacing(40.0)
-                .padding(100.0)
                 .resizable()
-                .corner_radius(10.0)
+                .corner_radius(100.0)
                 .outline(RGBA::MAGENTA, 5.0)
-                .size_fit()
+                .size_min_px(0.0, 0.0),
         );
 
         if signal.released() {
@@ -307,6 +335,11 @@ impl App {
         }
 
         self.ui.end_widget();
+
+        if self.ui.add_button("sdfsdfsdf") {
+            println!("dsfsdfsfsdf");
+        }
+
         self.ui.end_widget();
 
         // self.ui_state.add_widget(
@@ -325,19 +358,15 @@ impl App {
             WidgetOpt::new()
                 .fill(RGBA::BLUE)
                 .draggable()
-                .spacing(40.0)
+                .spacing(15.0)
                 .padding(100.0)
                 .resizable()
                 .corner_radius(10.0)
                 .outline(RGBA::RED, 5.0)
                 .pos_fix(100.0, 100.0)
-                .size_fit()
-                // .size_fix(500.0, 300.0)
-                // .size_fit_x(),
+                .size_min_fit(),
         );
         self.ui.end_widget();
-
-
 
         self.ui.draw_dbg_wireframe = self.dbg_wireframe;
         self.ui.end_frame();
@@ -355,8 +384,8 @@ impl App {
                 }
             }
             PhysicalKey::Code(KeyCode::KeyR) => {
-                let shader = ColorTint(RGBA::rand());
-                shader.try_rebuild(&[(&VertexPosCol::desc(), "Vertex")], &self.renderer.wgpu);
+                // let shader = ColorTint(RGBA::rand());
+                // shader.try_rebuild(&[(&VertexPosCol::desc(), "Vertex")], &self.renderer.wgpu);
             }
             _ => (),
         }
@@ -386,8 +415,7 @@ impl App {
 
         {
             let mut surface = self.renderer.surface_target();
-            // surface.render(&ClearScreen("#242933".into()));
-            surface.render(&ClearScreen(0.into()));
+            surface.render(&ClearScreen(RGBA::PASTEL_MINT));
             surface.render(&self.ui);
         }
 

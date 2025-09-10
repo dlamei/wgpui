@@ -5,14 +5,34 @@ edition = "2024"
 
 [dependencies]
 bytemuck = "1.23.2"
-env_logger = "0.11.8"
 futures = "0.3.31"
 glam = { version = "0.30.5", features = ["bytemuck"] }
 macros = { path = "./macros" }
 log = "0.4.27"
-wasm-bindgen = "0.2.100"
 wgpu = "26.0.1"
 winit = "0.30.12"
 rustc-hash = "2.1.1"
 bitflags = "2.9.2"
 lyon = "1.0.1"
+env_logger = "0.11.8"
+paste = "1.0.15"
+etagere = "0.2.15"
+cosmic-text = "0.14.2"
+
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.100"
+console_error_panic_hook = "0.1.7"
+console_log = "1.0.0"
+web-time = "1.1.0"
+wasm-bindgen-futures = "0.4.51"
+
+# [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+
+
+[features]
+default = ["webgl"]
+webgl = []
+webgpu = []
+
+# webgpu = ["wgpu/webgpu"]

@@ -1,10 +1,121 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt, hash,
     sync::{Arc, Mutex},
 };
 
-use crate::{RenderTarget, ShaderGenerics, UUID, utils};
+use glam::Vec2;
+
+use crate::utils;
+
+#[derive(Debug, Clone)]
+pub struct Texture {
+    data: Arc<(wgpu::Texture, wgpu::TextureView)>,
+}
+
+impl PartialEq for Texture {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+    }
+}
+
+impl Eq for Texture {}
+
+impl Texture {
+    pub fn new(texture: wgpu::Texture, texture_view: wgpu::TextureView) -> Self {
+        Self {
+            data: Arc::new((texture, texture_view)),
+        }
+    }
+
+    pub fn raw(&self) -> &wgpu::Texture {
+        &self.data.0
+    }
+
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.data.1
+    }
+
+    pub fn create_with_usage(
+        wgpu: &WGPU,
+        width: u32,
+        height: u32,
+        usage: wgpu::TextureUsages,
+    ) -> Self {
+        let texture_size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+
+        let texture = wgpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | usage,
+            view_formats: &[],
+        });
+
+        let texture_view = texture.create_view(&Default::default());
+
+        Self::new(texture, texture_view)
+    }
+
+    pub fn create_render_texture(wgpu: &WGPU, width: u32, height: u32) -> Self {
+        Self::create_with_usage(
+            wgpu,
+            width,
+            height,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        )
+    }
+
+    pub fn create(wgpu: &WGPU, width: u32, height: u32, data: &[u8]) -> Self {
+        assert_eq!((width * height * 4) as usize, data.len());
+
+        let texture = Self::create_with_usage(wgpu, width, height, wgpu::TextureUsages::COPY_DST);
+
+        wgpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfoBase {
+                texture: texture.raw(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        texture
+    }
+
+    pub fn width(&self) -> u32 {
+        self.raw().width()
+    }
+
+    pub fn height(&self) -> u32 {
+        self.raw().height()
+    }
+
+    pub fn size(&self) -> Vec2 {
+        Vec2::new(self.width() as f32, self.height() as f32)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VertexDesc {
@@ -298,7 +409,7 @@ pub struct Renderer {
     pub framebuffer_resolve: wgpu::TextureView,
     pub depthbuffer: wgpu::TextureView,
     pub active_surface: Option<wgpu::SurfaceTexture>,
-    pub wgpu: WGPU,
+    pub wgpu: WGPUHandle,
 }
 
 impl Renderer {
@@ -418,7 +529,7 @@ impl Renderer {
             framebuffer_resolve,
             depthbuffer,
             active_surface: None,
-            wgpu,
+            wgpu: wgpu.into(),
         }
     }
 
@@ -595,32 +706,35 @@ impl<ID: Copy + Eq + hash::Hash + fmt::Debug, RSRC> ResourceCache<ID, RSRC> {
     }
 }
 
+pub type WGPUHandle = Arc<WGPU>;
+
 pub struct WGPU {
     pub pipeline_cache: Mutex<ResourceCache<UUID, wgpu::RenderPipeline>>,
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub surface_config: wgpu::SurfaceConfiguration,
+    pub surface_config: RefCell<wgpu::SurfaceConfiguration>,
     pub surface_format: wgpu::TextureFormat,
 }
 
 impl WGPU {
     pub fn width(&self) -> u32 {
-        self.surface_config.width.max(1)
+        self.surface_config.borrow().width.max(1)
     }
 
     pub fn height(&self) -> u32 {
-        self.surface_config.height.max(1)
+        self.surface_config.borrow().height.max(1)
     }
 
     pub fn aspect_ratio(&self) -> f32 {
         self.width() as f32 / self.height() as f32
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.surface_config.width = width.max(1);
-        self.surface_config.height = height.max(1);
-        self.surface.configure(&self.device, &self.surface_config);
+    pub fn resize(&self, width: u32, height: u32) {
+        self.surface_config.borrow_mut().width = width.max(1);
+        self.surface_config.borrow_mut().height = height.max(1);
+        self.surface
+            .configure(&self.device, &*self.surface_config.borrow());
     }
 
     pub fn instance() -> wgpu::Instance {
@@ -632,7 +746,7 @@ impl WGPU {
             #[cfg(target_os = "windows")]
             backends: wgpu::Backends::DX12 | wgpu::Backends::GL,
             #[cfg(target_arch = "wasm32")]
-            backends: wgpu::Backends::GL,
+            backends: wgpu::Backends::GL | wgpu::Backends::BROWSER_WEBGPU,
             ..Default::default()
         })
     }
@@ -742,7 +856,7 @@ impl WGPU {
             surface,
             device,
             queue,
-            surface_config,
+            surface_config: RefCell::new(surface_config),
             surface_format,
         }
     }
@@ -993,5 +1107,122 @@ impl PipelineRequirement {
         }
 
         out
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UUID(pub u64);
+
+pub type ShaderID = &'static str;
+
+pub type ShaderGenerics<'a> = [(&'a VertexDesc, &'a str)];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShaderTyp {
+    Vertex,
+    Instance,
+    Uniform,
+}
+
+pub trait ShaderHandle {
+    const RENDER_PIPELINE_ID: ShaderID;
+    fn build_pipeline(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline;
+
+    fn pipeline_generic_id() -> UUID {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = rustc_hash::FxHasher::default();
+        Self::RENDER_PIPELINE_ID.hash(&mut hasher);
+        UUID(hasher.finish())
+    }
+
+    fn pipeline_vertex_id(desc: &ShaderGenerics<'_>) -> UUID {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = rustc_hash::FxHasher::default();
+        Self::RENDER_PIPELINE_ID.hash(&mut hasher);
+        for (d, _) in desc {
+            d.attributes.hash(&mut hasher);
+            d.members.hash(&mut hasher);
+        }
+        UUID(hasher.finish())
+    }
+
+    fn should_rebuild(&self) -> bool {
+        false
+    }
+
+    fn try_rebuild(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) {
+        log::info!(
+            "[pipeline] {}: rebuild for vertex ({:?})",
+            Self::RENDER_PIPELINE_ID,
+            desc.iter().map(|d| d.0.label).collect::<Vec<_>>(),
+        );
+        wgpu.register_pipeline(
+            Self::pipeline_vertex_id(desc),
+            self.build_pipeline(desc, wgpu),
+        );
+    }
+
+    fn get_pipeline(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
+        if self.should_rebuild() {
+            self.try_rebuild(desc, wgpu);
+        }
+
+        wgpu.get_or_init_pipeline(Self::pipeline_vertex_id(desc), || {
+            log::info!(
+                "[pipeline] {}: build for vertex ({:?})",
+                Self::RENDER_PIPELINE_ID,
+                desc.iter().map(|d| d.0.label).collect::<Vec<_>>(),
+            );
+            self.build_pipeline(desc, wgpu)
+        })
+    }
+}
+
+pub trait RenderPassHandle {
+    fn load_op(&self) -> wgpu::LoadOp<wgpu::Color> {
+        wgpu::LoadOp::Load
+    }
+    fn store_op(&self) -> wgpu::StoreOp {
+        wgpu::StoreOp::Store
+    }
+
+    fn draw<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU);
+}
+
+pub struct RenderTarget<'a> {
+    target_view: wgpu::TextureView,
+    resolve_view: Option<wgpu::TextureView>,
+    encoder: std::mem::ManuallyDrop<wgpu::CommandEncoder>,
+    wgpu: &'a WGPU,
+}
+
+impl<'a> Drop for RenderTarget<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            let encoder = std::mem::ManuallyDrop::take(&mut self.encoder);
+            self.wgpu.queue.submit(Some(encoder.finish()));
+        }
+    }
+}
+
+impl<'a> RenderTarget<'a> {
+    pub fn render<RH: RenderPassHandle>(&mut self, rh: &RH) {
+        let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.target_view,
+                resolve_target: self.resolve_view.as_ref(),
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: rh.load_op(),
+                    store: rh.store_op(),
+                },
+            })],
+            depth_stencil_attachment: None,
+            label: Some("main render pass"),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        rh.draw(&mut rpass, self.wgpu);
     }
 }

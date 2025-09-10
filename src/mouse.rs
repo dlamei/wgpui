@@ -1,9 +1,8 @@
-use std::{
-    fmt, ops,
-    time::{Duration, Instant},
-};
+use std::{fmt, ops};
 
 use glam::Vec2;
+
+use crate::utils::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MouseBtn {

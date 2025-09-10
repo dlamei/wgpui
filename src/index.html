@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atlas</title>
+    <style>
+      html, body, .root {
+        margin: 0; padding: 0;
+        width: 100%; height: 100%;
+        overflow: hidden;
+      }
+      .root {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+      canvas {
+        /* fill the viewport in CSS pixels */
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+    </style>
+  </head>
+
+  <body>
+    <script>
+      <!-- const MAX_DIM = 3840; --> 
+
+      function resizeCanvas() {
+        const canvas = document.getElementById("canvas");
+        // 1) true CSS layout size
+        const cssW = canvas.clientWidth;
+        const cssH = canvas.clientHeight;
+        // 2) device pixels
+        const dpr = window.devicePixelRatio || 1;
+        const physW = Math.round(cssW * dpr);
+        const physH = Math.round(cssH * dpr);
+
+        <!-- const finalW = physW > MAX_DIM ? MAX_DIM : physW; -->
+        <!-- const finalH = physH > MAX_DIM ? MAX_DIM : physH; -->
+
+        canvas.width  = physW;
+        canvas.height = physH;
+      }
+
+      window.addEventListener("load",   resizeCanvas);
+      window.addEventListener("resize", resizeCanvas);
+    </script>
+
+    <link data-trunk rel="rust" href="../Cargo.toml" data-bin="wgpui" />
+
+    <div class="root">
+      <canvas id="canvas" class="main-canvas"></canvas>
+    </div>
+
+  </body>
+</html>
+

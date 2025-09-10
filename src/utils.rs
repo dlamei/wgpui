@@ -1,5 +1,15 @@
 use std::fmt;
 
+#[cfg(target_arch = "wasm32")]
+pub type Instant = web_time::Instant;
+#[cfg(target_arch = "wasm32")]
+pub type Duration = web_time::Duration;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub type Instant = std::time::Instant;
+#[cfg(not(target_arch = "wasm32"))]
+pub type Duration = std::time::Duration;
+
 pub const fn rand_f32() -> f32 {
     static mut SEED: u32 = 123456789;
     unsafe {
@@ -79,6 +89,14 @@ impl RGBA {
             b: rand_f32(),
             a: rand_f32(),
         }
+    }
+
+    pub fn as_bytes(self) -> [u8; 4] {
+        let r = (self.r * 255.0) as u8;
+        let g = (self.g * 255.0) as u8;
+        let b = (self.b * 255.0) as u8;
+        let a = (self.a * 255.0) as u8;
+        [r, g, b, a]
     }
 
     pub fn as_wgsl_vec4(&self) -> String {
@@ -175,6 +193,18 @@ impl RGBA {
 
     pub const WHITE: RGBA = RGBA::rgb(255, 255, 255);
     pub const BLACK: RGBA = RGBA::rgb(0, 0, 0);
+
+    pub const PASTEL_PINK: RGBA = RGBA::hex("#FFB5E8");
+    pub const PASTEL_BLUE: RGBA = RGBA::hex("#B5DEFF");
+    pub const PASTEL_GREEN: RGBA = RGBA::hex("#C1FFD7");
+    pub const PASTEL_YELLOW: RGBA = RGBA::hex("#FFFACD");
+    pub const PASTEL_PURPLE: RGBA = RGBA::hex("#D7B5FF");
+    pub const PASTEL_ORANGE: RGBA = RGBA::hex("#FFD1B5");
+    pub const PASTEL_MINT: RGBA = RGBA::hex("#B5FFF9");
+
+
+
+
 
     pub const DEBUG: RGBA = RGBA::rgb(200, 0, 100);
 
