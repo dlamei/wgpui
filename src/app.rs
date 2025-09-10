@@ -36,6 +36,14 @@ impl Default for AppSetup {
     }
 }
 
+fn load_window_icon() -> winit::window::Icon {
+    let icon_bytes = include_bytes!("icon2.png");
+    let img = image::load_from_memory(icon_bytes).unwrap().into_rgba8();
+    let (width, height) = img.dimensions();
+    let rgba = img.into_raw();
+    winit::window::Icon::from_rgba(rgba, width, height).unwrap()
+}
+
 impl AppSetup {
     pub fn is_init(&self) -> bool {
         matches!(self, Self::Init(_))
@@ -52,9 +60,12 @@ impl AppSetup {
             return;
         }
 
+
         let window = event_loop
-            .create_window(winit::window::Window::default_attributes().with_title("Atlas"))
-            .unwrap();
+            .create_window(winit::window::Window::default_attributes()
+                .with_title("Atlas")
+                .with_window_icon(Some(load_window_icon()))
+                ).unwrap();
 
         let window_handle = Arc::new(window);
         // self.window = Some(window_handle.clone());
@@ -292,7 +303,7 @@ impl App {
                 .fill(RGBA::INDIGO)
                 .draggable()
                 .spacing(40.0)
-                .padding(100.0)
+                .padding(30.0)
                 .size_min_fit()
                 .size_max_px(2000.0, 1300.0)
                 .resizable()
@@ -305,21 +316,28 @@ impl App {
         static mut toggle: bool = false;
 
         if self.ui.add_button("hello") {
-            unsafe { toggle = !toggle; } 
-
+            unsafe {
+                toggle = !toggle;
+            }
         }
 
         if unsafe { toggle } {
-            self.ui.begin_widget("df", WidgetOpt::new()
-                .fill(RGBA::PASTEL_ORANGE)
-                .padding(100.0)
-                .size_px(200.0, 200.0)
+            self.ui.begin_widget(
+                "df",
+                WidgetOpt::new()
+                    .fill(RGBA::PASTEL_PURPLE)
+                    .padding(100.0)
+                    .size_px(200.0, 200.0)
             );
             self.ui.end_widget();
         }
 
         if self.ui.add_button("tes") {
             log::info!("tes");
+        }
+
+        if self.ui.add_button("abcdefghijklmnopqrstuvwxyz") {
+            log::info!("abcdefghijklmnopqrstuvwxyz");
         }
 
         self.ui.begin_widget(
@@ -400,8 +418,10 @@ impl App {
             }
             PhysicalKey::Code(KeyCode::KeyR) => {
                 if self.windows.len() < 3 {
-                let window = event_loop.create_window(Window::default_attributes()).unwrap();
-                self.windows.push(Arc::new(window))
+                    let window = event_loop
+                        .create_window(Window::default_attributes())
+                        .unwrap();
+                    self.windows.push(Arc::new(window))
                 }
                 // let shader = ColorTint(RGBA::rand());
                 // shader.try_rebuild(&[(&VertexPosCol::desc(), "Vertex")], &self.renderer.wgpu);
@@ -416,6 +436,7 @@ impl App {
         let dt = curr_time - prev_time;
         self.prev_frame_time = curr_time;
         self.delta_time = dt;
+
 
         self.window.pre_present_notify();
         let status = self.renderer.prepare_frame();

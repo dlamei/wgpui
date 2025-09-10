@@ -127,10 +127,11 @@ pub struct VertexDesc {
     pub byte_size: usize,
 }
 
-pub fn process_shader_code(
+/// sync structs tagged with @rust with the provided shader templates
+/// 
+pub fn pre_process_shader_code(
     code: &str,
-    // structs_desc: &[&VertexDesc; N],
-    structs_desc: &ShaderGenerics<'_>, // struct_names: &[&str; N],
+    structs_desc: &ShaderTemplates<'_>, // struct_names: &[&str; N],
 ) -> Result<String, String> {
     let reqs = PipelineRequirement::parse_all(code);
 
@@ -1115,7 +1116,7 @@ pub struct UUID(pub u64);
 
 pub type ShaderID = &'static str;
 
-pub type ShaderGenerics<'a> = [(&'a VertexDesc, &'a str)];
+pub type ShaderTemplates<'a> = [(&'a VertexDesc, &'a str)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShaderTyp {
@@ -1126,7 +1127,7 @@ pub enum ShaderTyp {
 
 pub trait ShaderHandle {
     const RENDER_PIPELINE_ID: ShaderID;
-    fn build_pipeline(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline;
+    fn build_pipeline(&self, desc: &ShaderTemplates<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline;
 
     fn pipeline_generic_id() -> UUID {
         use std::hash::{Hash, Hasher};
@@ -1135,7 +1136,7 @@ pub trait ShaderHandle {
         UUID(hasher.finish())
     }
 
-    fn pipeline_vertex_id(desc: &ShaderGenerics<'_>) -> UUID {
+    fn pipeline_vertex_id(desc: &ShaderTemplates<'_>) -> UUID {
         use std::hash::{Hash, Hasher};
         let mut hasher = rustc_hash::FxHasher::default();
         Self::RENDER_PIPELINE_ID.hash(&mut hasher);
@@ -1150,7 +1151,7 @@ pub trait ShaderHandle {
         false
     }
 
-    fn try_rebuild(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) {
+    fn try_rebuild(&self, desc: &ShaderTemplates<'_>, wgpu: &WGPU) {
         log::info!(
             "[pipeline] {}: rebuild for vertex ({:?})",
             Self::RENDER_PIPELINE_ID,
@@ -1162,7 +1163,7 @@ pub trait ShaderHandle {
         );
     }
 
-    fn get_pipeline(&self, desc: &ShaderGenerics<'_>, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
+    fn get_pipeline(&self, desc: &ShaderTemplates<'_>, wgpu: &WGPU) -> Arc<wgpu::RenderPipeline> {
         if self.should_rebuild() {
             self.try_rebuild(desc, wgpu);
         }

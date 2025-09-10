@@ -413,7 +413,11 @@ impl WidgetOpt {
     }
 
     pub fn text_meta(&self) -> TextMeta {
-        TextMeta::new(self.text.clone().unwrap_or("".into()), self.font_size, self.line_height)
+        TextMeta::new(
+            self.text.clone().unwrap_or("".into()),
+            self.font_size,
+            self.line_height,
+        )
     }
 
     // pub fn size_fix(mut self, x: f32, y: f32) -> Self {
@@ -974,7 +978,11 @@ impl State {
             self.set_cursor_icon(CursorIcon::Default)
         }
 
-        self.draw.draw_uv_rect(Rect::from_min_max(Vec2::ZERO, Vec2::splat(800.0)), Vec2::ZERO, Vec2::splat(1.0));
+        // self.draw.draw_uv_rect(
+        //     Rect::from_min_max(Vec2::ZERO, Vec2::splat(800.0)),
+        //     Vec2::ZERO,
+        //     Vec2::splat(1.0),
+        // );
     }
 
     pub fn end_frame(&mut self) {
@@ -1447,10 +1455,9 @@ impl State {
             (style.fill.default, style.outline.default)
         };
 
-
         let mut opt = WidgetOpt::new()
             // .size_px(size.x, size.y)
-            .text(label, 48.0)
+            .text(label, 20.0)
             .fill(fill)
             .clickable()
             .corner_radius(10.0)
@@ -1458,7 +1465,6 @@ impl State {
 
         let size = self.draw.measure_text_size(opt.text_meta());
         opt = opt.size_px(size.x, size.y);
-
 
         let (_, signal) = self.begin_widget(label, opt);
 
@@ -1512,7 +1518,6 @@ impl State {
                 self.cursor = w.rect.min;
             }
         }
-
 
         let mut widget_size: Vec2 = if let Some(w) = w {
             w.rect.size()
@@ -1630,7 +1635,10 @@ impl State {
         } else {
             sizes.fold(0.0, f32::max)
         };
-        let size = content_size + margins + w.opt.padding.sum_along_axis(axis) + w.opt.padding.sum_along_axis(axis);
+        let size = content_size
+            + margins
+            + w.opt.padding.sum_along_axis(axis)
+            + w.opt.padding.sum_along_axis(axis);
         size
     }
 
@@ -1646,13 +1654,13 @@ impl State {
     }
 }
 
-pub struct FontAtlasTexture {
+pub struct AtlasTexture {
     pub texture: gpu::Texture,
     pub alloc: etagere::BucketedAtlasAllocator,
     pub size: u32,
 }
 
-impl FontAtlasTexture {
+impl AtlasTexture {
     const SIZE: u32 = 1024;
 
     pub fn new(wgpu: &WGPU) -> Self {
@@ -1718,28 +1726,27 @@ pub struct ShapedGlyph {
     size: Vec2,
     uv_min: Vec2,
     uv_max: Vec2,
-    has_color: bool
+    has_color: bool,
 }
 
 impl fmt::Debug for Glyph<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Glyph")
             // .field("texture", &self.texture)
-            .field("meta", &self.meta).finish()
+            .field("meta", &self.meta)
+            .finish()
     }
 }
 
-
-
 pub struct FontAtlas {
-    pub textures: Vec<FontAtlasTexture>,
+    pub textures: Vec<AtlasTexture>,
     pub glyph_cache: HashMap<ctext::CacheKey, GlyphEntry>,
 }
 
 impl FontAtlas {
     pub fn new(wgpu: &WGPU) -> Self {
         Self {
-            textures: vec![FontAtlasTexture::new(wgpu)],
+            textures: vec![AtlasTexture::new(wgpu)],
             glyph_cache: Default::default(),
         }
     }
@@ -1759,6 +1766,7 @@ impl FontAtlas {
         }
 
         log::trace!("load glyph");
+        // dont cache on the cpu?
         let image = swash_cache.get_image_uncached(font_system, glyph)?;
         let x = image.placement.left;
         let y = image.placement.top;
@@ -1786,7 +1794,7 @@ impl FontAtlas {
         let alloc = if let Some(alloc) = self.textures.last_mut()?.allocate(w, h) {
             alloc
         } else {
-            let mut texture = FontAtlasTexture::new(wgpu);
+            let mut texture = AtlasTexture::new(wgpu);
             let alloc = texture.allocate(w, h)?;
             self.textures.push(texture);
             alloc
@@ -2039,9 +2047,9 @@ fn build_bind_group(
 
     let sampler = wgpu.device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("ui_texture_sampler"),
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Linear,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
         ..Default::default()
     });
 
@@ -2245,7 +2253,6 @@ pub struct DrawList {
     pub white_texture: gpu::Texture,
     pub text_cache: TextCache,
     pub text_cache_2: TextCache,
-    pub text_size_cache: HashMap<TextMeta, f32>,
 
     pub wgpu: WGPUHandle,
 }
@@ -2260,8 +2267,9 @@ pub struct DrawList {
 impl DrawList {
     pub fn new(wgpu: WGPUHandle) -> Self {
         let mut font_db = ctext::fontdb::Database::new();
-        font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
-
+        // font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
+        // font_db.load_font_data(include_bytes!("CommitMono-400-Regular.otf").to_vec());
+        font_db.load_font_data(include_bytes!("Roboto.ttf").to_vec());
 
         Self {
             vtx_buffer: Vec::new(),
@@ -2278,7 +2286,6 @@ impl DrawList {
             white_texture: gpu::Texture::create(&*wgpu, 1, 1, &RGBA::INDIGO.as_bytes()),
             text_cache: TextCache::new(),
             text_cache_2: TextCache::new(),
-            text_size_cache: HashMap::new(),
             wgpu,
         }
     }
@@ -2329,7 +2336,7 @@ impl DrawList {
             self.text_cache_2.insert(text.clone(), layout);
             return self.text_cache_2.get(&text).unwrap();
         } else if self.text_cache_2.contains_key(&text) {
-            return self.text_cache_2.get(&text).unwrap()
+            return self.text_cache_2.get(&text).unwrap();
         }
         // } else if let Some(layout) = self.text_cache_2.get(&text) {
         //     return layout;
@@ -2345,7 +2352,7 @@ impl DrawList {
         buffer.set_text(
             &mut self.font,
             &text_str,
-            &ctext::Attrs::new().family(ctext::Family::SansSerif),
+            &ctext::Attrs::new().family(ctext::Family::SansSerif).weight(ctext::Weight(800)),
             ctext::Shaping::Advanced,
         );
         buffer.set_size(&mut self.font, text_width, text_height);
@@ -2357,7 +2364,6 @@ impl DrawList {
         let mut height = 0.0;
 
         for run in buffer.layout_runs() {
-
             width = run.line_w.max(width);
             height = run.line_height.max(height);
 
@@ -2392,12 +2398,15 @@ impl DrawList {
             }
         }
 
-
         // margin of error
         width += 0.1;
         height += 0.1;
         log::trace!("register text: {text_str}");
-        let layout = TextGlyphLayout { glyphs, width, height };
+        let layout = TextGlyphLayout {
+            glyphs,
+            width,
+            height,
+        };
         self.text_cache_2.insert(text.clone(), layout);
         self.text_cache_2.get(&text).unwrap()
     }
@@ -2502,6 +2511,7 @@ impl DrawList {
 
     pub fn draw_widget(&mut self, rect: Rect, opt: &WidgetOpt) {
         self.path_rect(rect.min, rect.max, opt.corner_radius);
+
 
         if opt.flags.contains(WidgetFlags::DRAW_FILL) {
             let (vtx, idx) = tessellate_fill(&self.path, opt.fill);
@@ -2810,7 +2820,7 @@ pub struct UiShader;
 impl gpu::ShaderHandle for UiShader {
     const RENDER_PIPELINE_ID: gpu::ShaderID = "ui_shader";
 
-    fn build_pipeline(&self, desc: &gpu::ShaderGenerics<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline {
+    fn build_pipeline(&self, desc: &gpu::ShaderTemplates<'_>, wgpu: &WGPU) -> wgpu::RenderPipeline {
         const SHADER_SRC: &str = r#"
 
 
@@ -2910,7 +2920,7 @@ impl gpu::ShaderHandle for UiShader {
                     label: Some("global_bind_group_layout"),
                 });
 
-        let shader_src = gpu::process_shader_code(SHADER_SRC, &desc).unwrap();
+        let shader_src = gpu::pre_process_shader_code(SHADER_SRC, &desc).unwrap();
         let vertices = desc.iter().map(|d| d.0).collect::<Vec<_>>();
         gpu::PipelineBuilder::new(&shader_src, wgpu.surface_format)
             .label("rect_pipeline")

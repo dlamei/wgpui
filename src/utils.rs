@@ -202,10 +202,6 @@ impl RGBA {
     pub const PASTEL_ORANGE: RGBA = RGBA::hex("#FFD1B5");
     pub const PASTEL_MINT: RGBA = RGBA::hex("#B5FFF9");
 
-
-
-
-
     pub const DEBUG: RGBA = RGBA::rgb(200, 0, 100);
 
     pub const ZERO: RGBA = RGBA::rgba(0, 0, 0, 0);
