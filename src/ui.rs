@@ -1958,7 +1958,7 @@ impl State {
             Vec2::new(x, y)
         };
 
-        let mut rect = Rect::from_min_size(self.cursor, widget_size);
+        let mut rect = Rect::from_min_size(self.cursor.round(), widget_size);
         let off_x = match self.next_widget_placement.x() {
             Placement::Min => 0.0,
             Placement::Center => -widget_size.x / 2.0,
@@ -2441,33 +2441,27 @@ impl Vertex {
         }
     }
     pub fn color(pos: Vec2, col: RGBA) -> Self {
-        Self {
-            pos,
-            col,
-            uv: Vec2::ZERO,
-            tex: 0,
-            _pad: 0,
-        }
-    }
-
-    pub fn uv(pos: Vec2, uv: Vec2, tex: u32, col: RGBA) -> Self {
-        Self {
-            pos,
-            uv,
-            tex,
-            col,
-            _pad: 0,
-        }
+        Self::new(pos, col, Vec2::ZERO, 0)
     }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct GlobalUniform {
-    pub proj: glam::Mat4,
+    pub screen_size: Vec2,
+    pub _pad: Vec2,
+    pub proj: Mat4,
 }
 
 impl GlobalUniform {
+    pub fn new(screen_size: Vec2, proj: Mat4) -> Self {
+        Self {
+            screen_size,
+            _pad: Vec2::ZERO,
+            proj,
+        }
+    }
+
     pub fn build_bind_group(&self, wgpu: &WGPU) -> wgpu::BindGroup {
         let global_uniform = wgpu
             .device
@@ -2558,9 +2552,9 @@ fn build_bind_group(
 
     let sampler = wgpu.device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("ui_texture_sampler"),
-        mag_filter: wgpu::FilterMode::Nearest,
-        min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::FilterMode::Nearest,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
 
@@ -2597,20 +2591,20 @@ fn tessellate_uv_rect(
     tex: u32,
     tint: RGBA,
 ) -> ([Vertex; 4], [u32; 6]) {
-    let tl = Vertex::uv(rect.min, uv_min, tex, tint);
-    let tr = Vertex::uv(
+    let tl = Vertex::new(rect.min, tint, uv_min, tex);
+    let tr = Vertex::new(
         rect.min.with_x(rect.max.x),
+        tint,
         uv_min.with_x(uv_max.x),
         tex,
-        tint,
     );
-    let bl = Vertex::uv(
+    let bl = Vertex::new(
         rect.min.with_y(rect.max.y),
+        tint,
         uv_min.with_y(uv_max.y),
         tex,
-        tint,
     );
-    let br = Vertex::uv(rect.max, uv_max, tex, tint);
+    let br = Vertex::new(rect.max, tint, uv_max, tex);
 
     ([bl, br, tr, tl], [0, 1, 3, 1, 2, 3])
 }
@@ -2705,7 +2699,7 @@ pub fn tessellate_fill(points: &[Vec2], col: RGBA) -> (Vec<Vertex>, Vec<u32>) {
 
     const AA_SIZE: f32 = 1.0;
     const EPS: f32 = 1e-12;
-    let col_trans = RGBA::rgba(255, 255, 255, 0);
+    let col_trans = RGBA::rgba_f(col.r, col.g, col.b, 0.0);
     let n = points.len();
 
     // compute edge normals
@@ -3382,16 +3376,16 @@ impl gpu::RenderPassHandle for DrawList {
     }
 
     fn draw_multiple<'a>(&'a self, rpass: &mut wgpu::RenderPass<'a>, wgpu: &WGPU, i: u32) {
-        let global_uniform = GlobalUniform {
-            proj: Mat4::orthographic_lh(
+        let proj = Mat4::orthographic_lh(
                 0.0,
                 self.screen_size.x,
                 self.screen_size.y,
                 0.0,
                 -1.0,
-                0.0,
-            ),
-        };
+                1.0,
+            );
+
+        let global_uniform = GlobalUniform::new(self.screen_size, proj);
 
         let bind_group = build_bind_group(
             global_uniform,
@@ -3433,6 +3427,8 @@ impl gpu::ShaderHandle for UiShader {
             }
 
             struct GlobalUniform {
+                screen_size: vec2<f32>,
+                _pad: vec2<f32>,
                 proj: mat4x4<f32>,
             }
 
@@ -3441,6 +3437,7 @@ impl gpu::ShaderHandle for UiShader {
 
             struct VSOut {
                 @builtin(position) pos: vec4<f32>,
+                // @location(0) @interpolate(flat) color: vec4<f32>,
                 @location(0) color: vec4<f32>,
                 @location(1) uv: vec2<f32>,
                 @location(2) @interpolate(flat) tex: u32,
@@ -3455,8 +3452,8 @@ impl gpu::ShaderHandle for UiShader {
                 out.color = v.col;
                 out.uv = v.uv;
                 out.tex = v.tex;
-                out.pos = global.proj * vec4(v.pos, 0.0, 1.0);
 
+                out.pos = global.proj * vec4(v.pos, 0.0, 1.0);
                 return out;
             }
 
@@ -3471,7 +3468,6 @@ impl gpu::ShaderHandle for UiShader {
             fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
                 let c0 = textureSample(texture, samp, in.uv) * in.color;
                 let c1 = in.color;
-
                 return select(c0, c1, in.tex != 1);
             }
             "#;
