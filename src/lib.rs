@@ -3,6 +3,8 @@ mod gpu;
 mod mouse;
 mod rect;
 mod ui;
+mod ui2;
+mod ui_draw;
 mod utils;
 
 use std::sync::Arc;
@@ -25,7 +27,6 @@ pub struct VertexPosCol {
 }
 
 pub(crate) use cosmic_text as ctext;
-
 
 macro_rules! build {
     ($constructor:expr;  { $(. $field:ident = $value:expr;)* }) => {{

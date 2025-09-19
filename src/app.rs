@@ -10,7 +10,13 @@ use winit::{
 };
 
 use crate::{
-    build, gpu::{self, WGPUHandle, Window, WindowId, WGPU}, mouse::{self, MouseBtn}, rect::Rect, ui::{self, WidgetId, WidgetOpt}, utils::{self, Duration, Instant, RGBA}, Vertex, VertexPosCol
+    Vertex, VertexPosCol, build,
+    gpu::{self, WGPU, WGPUHandle, Window, WindowId},
+    mouse::{self, MouseBtn},
+    rect::Rect,
+    ui::{self, WidgetId, WidgetOpt},
+    ui2,
+    utils::{self, Duration, Instant, RGBA},
 };
 
 #[derive(Debug, Clone)]
@@ -211,6 +217,7 @@ impl ApplicationHandler for AppSetup {
 
 pub struct App {
     pub ui: ui::State,
+    // pub ui2: ui2::State,
 
     pub dbg_wireframe: bool,
     pub mouse_pos: Vec2,
@@ -230,7 +237,8 @@ impl App {
         let mut windows = HashMap::new();
         windows.insert(main_window, window.clone());
         Self {
-            ui: ui::State::new(wgpu.clone(), window),
+            ui: ui::State::new(wgpu.clone(), window.clone()),
+            // ui2: ui2::State::new(wgpu.clone(), window),
             dbg_wireframe: false,
             prev_frame_time: Instant::now(),
             delta_time: Duration::ZERO,
@@ -323,6 +331,9 @@ impl App {
     }
 
     fn on_update(&mut self) {
+        // self.ui2.start_ui();
+        // self.ui2.end_ui();
+
         let ui = &mut self.ui;
 
         // ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
@@ -475,6 +486,7 @@ impl App {
 
             target.render(&ClearScreen(RGBA::rgba_f(0.0, 0.0, 0.0, 0.0)));
             target.render(&self.ui.draw);
+            // target.render(&self.ui2.draw);
         }
 
         window.present_frame();
