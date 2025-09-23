@@ -2,7 +2,6 @@ pub mod app;
 mod gpu;
 mod mouse;
 mod mouse2;
-mod pixglyph;
 mod rect;
 mod ui;
 mod ui2;
