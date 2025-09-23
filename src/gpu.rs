@@ -1074,7 +1074,7 @@ pub struct WindowCore {
     pub raw: Box<winit::window::Window>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Window {
     pub id: WindowId,
     pub surface_present_mode: wgpu::PresentMode,
@@ -1082,9 +1082,18 @@ pub struct Window {
     pub surface_usage: wgpu::TextureUsages,
     pub surface_format: wgpu::TextureFormat,
 
+    pub surface: wgpu::Surface<'static>,
+    pub width: u32,
+    pub height: u32,
+    pub current_surface_texture: Option<wgpu::SurfaceTexture>,
+
+    // keep as last field, so its dropped after all the others
+    pub raw: Box<winit::window::Window>,
+    // pub titlebar_height: Option<f32>,
+
     // we do this so that we can have cheap copies of a window that can be mutably borrowed
     // core must remain equal for all window copies
-    pub core: Arc<RefCell<WindowCore>>,
+    // pub core: Arc<RefCell<WindowCore>>,
 }
 
 /// create a surface with a static lifetime of the given window
@@ -1109,7 +1118,7 @@ impl Window {
     const DESIRED_MAXIMUM_FRAME_LATENCY: u32 = 0;
 
     pub fn set_cursor_icon(&self, icon: mouse::CursorIcon) {
-        self.core.borrow().raw.set_cursor(icon);
+        self.raw.set_cursor(icon);
     }
 
     pub fn start_drag_resize_window(&self, dir: ui::Dir) {
@@ -1117,11 +1126,7 @@ impl Window {
             return;
         }
 
-        let res = self
-            .core
-            .borrow()
-            .raw
-            .drag_resize_window(dir.as_winit_resize());
+        let res = self.raw.drag_resize_window(dir.as_winit_resize());
 
         if let Err(e) = res {
             log::warn!("{e}");
@@ -1129,28 +1134,28 @@ impl Window {
     }
 
     pub fn start_drag_window(&self) {
-        let res = self.core.borrow().raw.drag_window();
+        let res = self.raw.drag_window();
         if let Err(e) = res {
             log::warn!("{e}");
         }
     }
 
     pub fn is_maximized(&self) -> bool {
-        let w = &self.core.borrow().raw;
+        let w = &self.raw;
         w.is_maximized()
     }
 
     pub fn toggle_maximize(&self) {
-        let w = &self.core.borrow().raw;
-        w.set_maximized(!w.is_maximized())
+        let w = &self.raw;
+        w.set_maximized(!w.is_maximized());
     }
 
     pub fn minimize(&self) {
-        self.core.borrow().raw.set_minimized(true)
+        self.raw.set_minimized(true)
     }
 
     pub fn maximize(&self) {
-        self.core.borrow().raw.set_maximized(true)
+        self.raw.set_maximized(true)
     }
 
     pub fn surface_config(&self, width: u32, height: u32) -> wgpu::SurfaceConfiguration {
@@ -1168,54 +1173,49 @@ impl Window {
     }
 
     pub fn surface_width(&self) -> u32 {
-        self.core.borrow().width
+        self.width
     }
 
     pub fn surface_height(&self) -> u32 {
-        self.core.borrow().height
+        self.height
     }
 
     pub fn resize(&mut self, width: u32, height: u32, device: &wgpu::Device) {
-        let mut core = self.core.borrow_mut();
-        core.width = width.max(1);
-        core.height = height.max(1);
-        let config = self.surface_config(core.width, core.height);
-        core.surface.configure(device, &config);
+        self.width = width.max(1);
+        self.height = height.max(1);
+        let config = self.surface_config(self.width, self.height);
+        self.surface.configure(device, &config);
     }
 
     pub fn window_size(&self) -> Vec2 {
-        let size = self.core.borrow().raw.inner_size();
+        let size = self.raw.inner_size();
         Vec2::new(size.width as f32, size.height as f32)
     }
 
     pub fn window_pos(&self) -> Vec2 {
-        let pos = self.core.borrow().raw.inner_position().unwrap_or_default();
+        let pos = self.raw.inner_position().unwrap_or_default();
         Vec2::new(pos.y as f32, pos.y as f32)
     }
 
     pub fn set_window_size(&mut self, width: u32, height: u32) {
         use winit::dpi::PhysicalSize;
-        self.core
-            .borrow()
-            .raw
+        self.raw
             .request_inner_size(PhysicalSize::new(width, height));
     }
 
     pub fn set_window_pos(&mut self, pos: Vec2) {
         use winit::dpi::PhysicalPosition;
         let s = self
-            .core
-            .borrow()
             .raw
             .set_outer_position(PhysicalPosition::new(pos.x as u32, pos.y as u32));
     }
 
     pub fn set_window_decorations(&self, b: bool) {
-        self.core.borrow().raw.set_decorations(b);
+        self.raw.set_decorations(b);
     }
 
     pub fn is_decorated(&self) -> bool {
-        self.core.borrow().raw.is_decorated()
+        self.raw.is_decorated()
     }
 
     pub fn from_surface(
@@ -1226,13 +1226,11 @@ impl Window {
         let id = raw.id();
         Self {
             id,
-            core: Arc::new(RefCell::new(WindowCore {
-                surface,
-                raw,
-                current_surface_texture: None,
-                width: cfg.width,
-                height: cfg.height,
-            })),
+            surface,
+            raw,
+            current_surface_texture: None,
+            width: cfg.width,
+            height: cfg.height,
             surface_present_mode: cfg.present_mode,
             surface_alpha_mode: cfg.alpha_mode,
             surface_usage: cfg.usage,
@@ -1263,28 +1261,28 @@ impl Window {
     }
 
     pub fn window_width(&self) -> u32 {
-        self.core.borrow().raw.inner_size().width
+        self.raw.inner_size().width
     }
     pub fn window_height(&self) -> u32 {
-        self.core.borrow().raw.inner_size().height
+        self.raw.inner_size().height
     }
 
     pub fn reconfigure(&mut self, device: &wgpu::Device) {
-        let size = self.core.borrow().raw.inner_size();
+        let size = self.raw.inner_size();
         self.resize(size.width, size.height, device)
     }
 
     /// returns false when unable to accquire the current surface texture
     ///
     pub fn prepare_frame<'a>(&mut self, wgpu: &'a WGPU) -> Option<RenderTarget<'a>> {
-        if self.core.borrow().current_surface_texture.is_some() {
+        if self.current_surface_texture.is_some() {
             log::error!("Renderer::prepare_frame called with active surface!");
             panic!();
         }
 
         let mut reconfigure = false;
 
-        let surface_texture = match self.core.borrow().surface.get_current_texture() {
+        let surface_texture = match self.surface.get_current_texture() {
             Ok(st) => Some(st),
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 reconfigure = true;
@@ -1308,7 +1306,7 @@ impl Window {
         let surface_texture_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.core.borrow_mut().current_surface_texture = Some(surface_texture);
+        self.current_surface_texture = Some(surface_texture);
 
         Some(RenderTarget {
             target_view: surface_texture_view,
@@ -1320,10 +1318,8 @@ impl Window {
     }
 
     pub fn present_frame(&mut self) {
-        self.core.borrow().raw.pre_present_notify();
+        self.raw.pre_present_notify();
         let surface_texture = self
-            .core
-            .borrow_mut()
             .current_surface_texture
             .take()
             .expect("prepare_frame must be called before present_frame");
@@ -1331,6 +1327,6 @@ impl Window {
     }
 
     pub fn request_redraw(&self) {
-        self.core.borrow().raw.request_redraw();
+        self.raw.request_redraw();
     }
 }

@@ -216,8 +216,7 @@ impl ApplicationHandler for AppSetup {
 }
 
 pub struct App {
-    pub ui: ui::State,
-    pub ui2: ui2::State,
+    pub ui2: ui2::Context,
 
     pub dbg_wireframe: bool,
     pub mouse_pos: Vec2,
@@ -227,30 +226,25 @@ pub struct App {
 
     pub wgpu: WGPUHandle,
     pub main_window: WindowId,
-    pub windows: HashMap<WindowId, Window>,
+    // pub windows: HashMap<WindowId, Window>,
 }
 
 impl App {
     pub fn new(wgpu: WGPU, window: Window) -> Self {
         let wgpu = Arc::new(wgpu);
         let main_window = window.id;
-        let mut windows = HashMap::new();
-        windows.insert(main_window, window.clone());
+        // let mut windows = HashMap::new();
+        // windows.insert(main_window, window.clone());
         Self {
-            ui: ui::State::new(wgpu.clone(), window.clone()),
-            ui2: ui2::State::new(wgpu.clone(), window),
+            // ui: ui::State::new(wgpu.clone(), window.clone()),
+            ui2: ui2::Context::new(wgpu.clone(), window),
             dbg_wireframe: false,
             prev_frame_time: Instant::now(),
             delta_time: Duration::ZERO,
             mouse_pos: Vec2::NAN,
             wgpu,
             main_window,
-            windows,
         }
-    }
-
-    fn get_window(&self, id: WindowId) -> &Window {
-        self.windows.get(&id).unwrap()
     }
 
     fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -258,37 +252,31 @@ impl App {
         // if self.window.id() != window_id {
         //     return;
         // // }
-        // let w_size = self.ui.window.window_size();
-        // let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
+        let w_size = self.ui2.window.window_size();
+        let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
 
-        // let resize_dir = ui::is_in_resize_region(w_rect, self.mouse_pos, self.ui.resize_threshold);
+        let resize_dir = ui::is_in_resize_region(w_rect, self.mouse_pos, self.ui2.resize_threshold);
         // let mut dragging = false;
-
-        if !self.ui.window.is_decorated() {
-            // if let Some(dir) = resize_dir {
-            //     self.ui.set_cursor_icon(dir.as_cursor());
-            // } else if self.mouse_pos.y <= 40.0 {
-            //     dragging = true;
-            // }
-
-            // // TODO[NOTE]: a bit hacky
-            // if resize_dir.is_none() && self.ui.cursor_icon != mouse::CursorIcon::Default {
-            //     self.ui.set_cursor_icon(mouse::CursorIcon::Default);
-            // }
-        }
 
         match event {
             WE::CursorMoved { position: pos, .. } => {
                 self.mouse_pos = (pos.x as f32, pos.y as f32).into();
-                self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+                // self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
                 self.ui2.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+                if id == self.ui2.window.id && !self.ui2.window.raw.has_focus() {
+                    self.on_update(event_loop);
+                    self.on_redraw(event_loop, id);
+
+                    // println!("request redraw");
+                    // self.ui2.window.request_redraw();
+                }
                 // self.windows.get_mut(&id).unwrap().on_mouse_moved(self.mouse_pos);
             }
             WE::CursorEntered { .. } => {
-                self.ui.cursor_in_window = true;
+                // self.ui.cursor_in_window = true;
             }
             WE::CursorLeft { .. } => {
-                self.ui.cursor_in_window = true;
+                // self.ui.cursor_in_window = true;
             }
 
             WE::MouseInput { state, button, .. } => {
@@ -300,15 +288,15 @@ impl App {
 
                 match button {
                     MouseButton::Left => {
-                        self.ui.set_mouse_press(MouseBtn::Left, pressed);
+                        // self.ui.set_mouse_press(MouseBtn::Left, pressed);
                         self.ui2.set_mouse_press(MouseBtn::Left, pressed);
                     }
                     MouseButton::Middle => {
-                        self.ui.set_mouse_press(MouseBtn::Middle, pressed);
+                        // self.ui.set_mouse_press(MouseBtn::Middle, pressed);
                         self.ui2.set_mouse_press(MouseBtn::Middle, pressed);
                     }
                     MouseButton::Right => {
-                        self.ui.set_mouse_press(MouseBtn::Right, pressed);
+                        // self.ui.set_mouse_press(MouseBtn::Right, pressed);
                         self.ui2.set_mouse_press(MouseBtn::Left, pressed);
                     }
                     _ => (),
@@ -316,7 +304,11 @@ impl App {
             }
             WE::RedrawRequested => {
                 if id == self.main_window {
-                    self.on_update();
+                    self.on_update(event_loop);
+                    let pid = self.ui2.find_panel_by_name("#ROOT_PANEL");
+                    if self.ui2.close_pressed {
+                        event_loop.exit();
+                    }
                 }
                 self.on_redraw(event_loop, id);
             }
@@ -325,28 +317,31 @@ impl App {
             }
             WE::Resized(PhysicalSize { width, height }) => {
                 let (width, height) = (width.max(1), height.max(1));
+                self.ui2.resize_window(id, width, height);
 
-                self.windows
-                    .get_mut(&id)
-                    .unwrap()
-                    .resize(width, height, &self.wgpu.device);
+                // self.windows
+                //     .get_mut(&id)
+                //     .unwrap()
+                //     .resize(width, height, &self.wgpu.device);
             }
             WE::CloseRequested => event_loop.exit(),
             _ => (),
         }
     }
 
-    fn on_update(&mut self) {
+    fn on_update(&mut self, event_loop: &ActiveEventLoop) {
         let ui = &mut self.ui2;
         ui.draw_debug = self.dbg_wireframe;
         ui.begin_frame();
 
+        ui.next_panel_data.bg_color = RGBA::MAGENTA;
+        ui.next_panel_data.outline = Some((RGBA::DARK_BLUE, 5.0));
         ui.begin("Debug");
-        ui.button("test button");
-        ui.button("the quick brown fox jumps over the lazy dog");
+        ui.button("test button", RGBA::WHITE);
+        ui.button("the quick brown fox jumps over the lazy dog", RGBA::WHITE);
         ui.end();
 
-        ui.end_frame();
+        ui.end_frame(event_loop);
 
         // log::info!("");
         // log::info!("item : {}", ui.hot_id);
@@ -474,16 +469,6 @@ impl App {
                     self.dbg_wireframe = !self.dbg_wireframe;
                 }
             }
-            PhysicalKey::Code(KeyCode::KeyR) => {
-                if self.windows.len() < 3 {
-                    let window = event_loop
-                        .create_window(WinitWindow::default_attributes())
-                        .unwrap();
-                    let size = window.inner_size();
-                    let window = Window::new(window, size.width, size.height, &self.wgpu);
-                    self.windows.insert(window.id, window);
-                }
-            }
             _ => (),
         }
     }
@@ -495,9 +480,8 @@ impl App {
         self.prev_frame_time = curr_time;
         self.delta_time = dt;
 
-        let window = self.windows.get_mut(&id).unwrap();
-
         {
+            let window = self.ui2.get_mut_window(id);
             let Some(mut target) = window.prepare_frame(&self.wgpu) else {
                 return;
             };
@@ -507,14 +491,8 @@ impl App {
             target.render(&self.ui2.draw);
         }
 
+        let window = self.ui2.get_mut_window(id);
         window.present_frame();
         window.request_redraw();
-    }
-
-    fn resize_main_window(&mut self, w: u32, h: u32) {
-        self.windows
-            .get_mut(&self.main_window)
-            .unwrap()
-            .resize(w, h, &self.wgpu.device);
     }
 }

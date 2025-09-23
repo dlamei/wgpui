@@ -99,6 +99,10 @@ impl RGBA {
         [r, g, b, a]
     }
 
+    pub fn as_u32(self) -> u32 {
+        u32::from_ne_bytes(self.as_bytes())
+    }
+
     pub fn as_wgsl_vec4(&self) -> String {
         format!("vec4<f32>({},{},{},{})", self.r, self.g, self.b, self.a)
     }

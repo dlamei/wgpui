@@ -362,7 +362,7 @@ impl GlobalUniform {
     }
 }
 
-fn build_bind_group(
+pub fn build_bind_group(
     glob: GlobalUniform,
     tex_view: &wgpu::TextureView,
     wgpu: &WGPU,
