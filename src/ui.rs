@@ -1,11 +1,10 @@
 use glam::{Mat4, UVec2, UVec4, Vec2, Vec4};
 use macros::vertex;
-use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     fmt,
     hash::{Hash, Hasher},
     ops,
@@ -18,7 +17,7 @@ use crate::{
     mouse::{CursorIcon, MouseBtn, MouseRec, MouseState},
     rect::Rect,
     ui_draw::{DrawList, TextMeta},
-    utils::{Duration, Instant},
+    utils::{Duration, HashMap, Instant},
 };
 
 macro_rules! sig_bits {
@@ -152,7 +151,7 @@ impl WidgetId {
     pub const NULL: WidgetId = WidgetId(0);
 
     pub fn from_str(s: &str) -> Self {
-        let mut hasher = rustc_hash::FxHasher::default();
+        let mut hasher = ahash::AHasher::default();
         s.hash(&mut hasher);
         Self(hasher.finish().max(1))
     }
@@ -928,7 +927,7 @@ pub struct State {
     pub mouse: MouseState,
     pub frame_count: u64,
 
-    pub widgets: FxHashMap<WidgetId, Widget>,
+    pub widgets: HashMap<WidgetId, Widget>,
     /// determine widget parents
     pub widget_stack: Vec<WidgetId>,
     /// include parent hash in child hash
@@ -997,7 +996,7 @@ impl State {
             active_id: WidgetId::NULL,
             mouse: MouseState::new(),
             frame_count: 0,
-            widgets: FxHashMap::default(),
+            widgets: HashMap::default(),
             id_stack: Vec::new(),
             widget_stack: Vec::new(),
             draw_order: Vec::new(),
@@ -1379,7 +1378,8 @@ impl State {
     pub fn id_from_str(&self, str: &str) -> WidgetId {
         use std::hash::{Hash, Hasher};
         if let Some(p_id) = self.id_stack.last() {
-            let mut hasher = rustc_hash::FxHasher::with_seed(p_id.0 as usize);
+            let mut hasher = ahash::AHasher::default();
+            p_id.hash(&mut hasher);
             str.hash(&mut hasher);
             WidgetId(hasher.finish())
         } else {

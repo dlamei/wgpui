@@ -1,21 +1,26 @@
-use std::{collections::HashMap, fmt, hash, rc::Rc};
+use std::{
+    cell::{Ref, RefCell},
+    fmt, hash,
+    rc::Rc,
+};
 
-use bitflags::bitflags as flags;
-use glam::{Mat4, Vec2};
-use rustc_hash::FxHashMap;
 use cosmic_text as ctext;
+use glam::{Mat4, Vec2};
+use macros::{flags, lorem};
 
 use crate::{
-    gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU},
+    Vertex as VertexTyp,
+    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
     mouse::{CursorIcon, MouseBtn, MouseState},
     rect::Rect,
     ui::{Dir, Layout, Placement, Signals},
     ui_draw::{self, Vertex},
-    utils::RGBA, Vertex as VertexTyp,
+    utils::{HashMap, RGBA},
 };
 
 pub struct Context {
-    pub panels: FxHashMap<Id, Panel>,
+    // pub panels: HashMap<Id, Panel>,
+    pub panels: PanelMap,
 
     pub current_panel_stack: Vec<Id>,
     pub current_panel: Id,
@@ -23,12 +28,33 @@ pub struct Context {
     pub last_item_data: Option<LastItemData>,
     pub panel_action: PanelAction,
     // pub resizing_window_dir: Option<Dir>,
-    pub next_panel_data: NextPanelData,
+    pub next: NextPanelData,
 
+    // TODO[CHECK]: when do we set the panels and item ids?
+
+    /// the id of the element that is currently hovered
+    ///
+    /// can either be an item or a panel
     pub hot_id: Id,
-    pub hot_panel_id: Id,
+    
+    /// the id of the element that is currently active
+    ///
+    /// Can either be an item or a panel.
+    /// This allows e.g. dragging the panel by its titlebar (item) or the panel itself
     pub active_id: Id,
+
+    /// the id of the hot panel
+    ///
+    /// the hot_id can only point to elements of the currently hot panel
+    pub hot_panel_id: Id,
+    
+    /// the id of the active panel
+    ///
+    /// the active_id can only point to elements of the currently active panel
     pub active_panel_id: Id,
+
+    pub prev_hot_panel_id: Id,
+    pub prev_active_panel_id: Id,
 
     pub frame_count: u64,
     pub draw_debug: bool,
@@ -48,25 +74,8 @@ pub struct Context {
     pub ext_window: Option<Window>,
 }
 
-macro_rules! get_panel {
-    ($state:ident: $id:expr) => {{
-        let id = $id;
-        $state.panels.get(&id).unwrap()
-    }};
-}
-macro_rules! get_curr_panel {
-    ($state:ident) => {
-        $state.panels.get(&$state.current_panel).unwrap()
-    };
-
-    (mut $state:ident) => {
-        $state.panels.get_mut(&$state.current_panel).unwrap()
-    };
-}
-
 impl Context {
     pub fn new(wgpu: WGPUHandle, window: Window) -> Self {
-
         let glyph_cache = GlyphCache::new(&wgpu);
         let mut font_table = FontTable::new();
         font_table.load_font("Roboto", include_bytes!("../res/Roboto.ttf").to_vec());
@@ -82,8 +91,10 @@ impl Context {
             active_id: Id::NULL,
             active_panel_id: Id::NULL,
             panel_action: PanelAction::None,
+            prev_hot_panel_id: Id::NULL,
+            prev_active_panel_id: Id::NULL,
             // resizing_window_dir: None,
-            next_panel_data: NextPanelData::default(),
+            next: NextPanelData::default(),
 
             draw_order: Vec::new(),
             draw_debug: false,
@@ -162,21 +173,18 @@ impl Context {
         }
 
         if press && lft_btn {
+
             let id = self.find_panel_by_name("#ROOT_PANEL");
-            let root_panel = self.panels.get_mut(&id).unwrap();
+            let root_panel = &self.panels[id];
             let titlebar_height = root_panel.titlebar_height;
             if let Some(dir) = resize_dir {
-                // self.curr_widget_action = WidgetAction::ResizeWindow { dir };
+
                 self.window.start_drag_resize_window(dir)
             } else if self.mouse.pos.y <= titlebar_height {
-                // self.curr_widget_action = WidgetAction::DragWindow;
                 self.window.start_drag_window()
             }
         }
 
-        // if !press && lft_btn && self.curr_widget_action.is_window_action() {
-        //     self.curr_widget_action = WidgetAction::None;
-        // }
     }
 
     pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
@@ -202,6 +210,21 @@ impl Context {
     }
 
     pub fn begin_ex(&mut self, name: &str, flags: PanelFlags) {
+        fn next_window_pos(screen: Vec2, panel_size: Option<Vec2>) -> Vec2 {
+            static mut PANEL_COUNT: u32 = 1;
+            let offset = 60.0;
+            let size = panel_size.unwrap_or(Vec2::new(500.0, 300.0));
+
+            let (x, y);
+            unsafe {
+                x = (offset * PANEL_COUNT as f32) % (screen.x - size.x).max(0.0);
+                y = (offset * PANEL_COUNT as f32) % (screen.y - size.y).max(0.0);
+                PANEL_COUNT += 1;
+            }
+
+            Vec2::new(x, y)
+        }
+
         let mut newly_created = false;
         let mut id = self.find_panel_by_name(name);
         if id.is_null() {
@@ -212,38 +235,54 @@ impl Context {
         self.current_panel_stack.push(id);
         self.current_panel = id;
 
-        let p = self.panels.get_mut(&id).unwrap();
+        let p = &mut self.panels[id];
         if newly_created {
             p.draw_order = self.draw_order.len();
             self.draw_order.push(id);
+
+            if self.next.pos.is_none() {
+                p.pos = next_window_pos(self.draw.screen_size, self.next.size);
+            }
         }
-        if let Some(pos) = self.next_panel_data.pos {
+        if let Some(pos) = self.next.pos {
             p.pos = pos;
         }
-        p.explicit_size = self.next_panel_data.size;
-        p.bg_color = self.next_panel_data.bg_color;
-        p.outline = self.next_panel_data.outline;
-        p.titlebar_height = self.next_panel_data.titlebar_height;
-        p.layout = self.next_panel_data.layout;
-        self.next_panel_data.reset();
-        // let first_begin_this_frame = p.last_frame_used == self.frame_count;
+
+        p.clear_temp_data();
+
+        assert!(p.id == id);
+        p.push_id(p.id);
+        p.flags = flags;
+        p.explicit_size = self.next.size;
+        p.bg_color = self.next.bg_color;
+        p.outline = self.next.outline;
+        p.titlebar_height = self.next.titlebar_height;
+        p.layout = self.next.layout;
         p.last_frame_used = self.frame_count;
-        p.draw_list.clear();
-        p.id_stack.push(p.id);
-        p.tmp.root = p.id;
+        p.move_id = p.gen_id("#MOVE");
+        let corner_rad = self.next.corner_radius;
 
-        let prev_max_pos = p.tmp.cursor_max_pos;
+        if flags.has(PanelFlags::NO_MOVE) {
+            p.move_id = Id::NULL;
+        } else if flags.has(PanelFlags::NO_TITLEBAR) {
+            // move the window by dragging it if no titlebar exists
+            p.move_id = p.id;
+            p.titlebar_height = 0.0;
+        }
 
-        p.tmp.cursor_content_start_pos =
-            p.pos + Vec2::new(p.padding, p.padding + p.titlebar_height);
-        p.tmp.cursor_pos = p.tmp.cursor_content_start_pos;
-        p.tmp.cursor_max_pos = p.tmp.cursor_pos;
+        self.next.reset();
+        p.root = p.id;
+
+
+        let prev_max_pos = p.cursor_max_pos();
+
+        let content_start = p.pos + Vec2::new(p.padding, p.padding + p.titlebar_height);
+        p.init_content_cursor(content_start);
 
         // preserve when?
-        p.content_size = prev_max_pos - p.tmp.cursor_content_start_pos;
+        p.content_size = prev_max_pos - p.cursor_content_start_pos();
         p.full_size = prev_max_pos - p.pos;
 
-        let p = self.panels.get_mut(&id).unwrap();
         let panel_pos = p.pos;
 
         // bg
@@ -253,60 +292,84 @@ impl Context {
             p.full_size
         };
         p.size = panel_size;
-        p.draw_list.add_rect(
-            panel_pos,
-            panel_pos + panel_size,
-            Some(p.bg_color),
-            p.outline.map(|(col, w)| (col, w, OutlinePlacement::Inner)),
-            &[10.0],
-        );
+        p.draw(|list| {
+            let mut rect = list
+                .rect(panel_pos, panel_pos + panel_size)
+                .fill(p.bg_color)
+                .radius(corner_rad);
 
-        let panel_rect = Rect::from_min_size(p.pos, p.full_size);
-        let p_titlebar_height = p.titlebar_height;
+            rect.outline = p.outline.map(|(col, w)| (col, w, OutlinePlacement::Inner));
+            rect.draw()
+        });
 
-        let curr_draw_order = p.draw_order;
+        let panel_rect = Rect::from_min_size(p.pos, p.size);
+
+        let p = &self.panels[id];
+
         if panel_rect.contains(self.mouse.pos) {
             if self.hot_panel_id.is_null()
-                || self.panels.get(&self.hot_panel_id).unwrap().draw_order < curr_draw_order
+                || self.panels[self.hot_panel_id].draw_order < p.draw_order
             {
-                self.hot_panel_id = id;
+                if !p.flags.has(PanelFlags::NO_FOCUS) {
+                    self.hot_panel_id = id;
+                    self.hot_id = id;
+                }
             }
         }
 
-        let p = self.panels.get_mut(&id).unwrap();
+        // let p = &self.panels[id];
         let is_window_panel = p.is_window_panel;
-        if !flags.contains(PanelFlags::NO_TITLEBAR) {
+        if !p.flags.has(PanelFlags::NO_TITLEBAR) {
             // titlebar
-            let tb_id = p.gen_id("#MOVE");
-            p.move_id = tb_id;
-            p.draw_list.add_rect(
-                panel_pos,
-                panel_pos + Vec2::new(panel_size.x, p.titlebar_height),
-                Some(RGBA::hex("#202020")),
-                None,
-                &[10.0, 10.0, 0.0, 0.0],
-            );
+            p.draw(|list| {
+                list.add_rect(
+                    panel_pos,
+                    panel_pos + Vec2::new(panel_size.x, p.titlebar_height),
+                    Some(RGBA::hex("#202020")),
+                    None,
+                    &[corner_rad, corner_rad, 0.0, 0.0],
+                )
+            });
             // let tb_rect = Rect::from_min_size(p.pos, Vec2::new(panel_size.x, p.titlebar_height));
             let prev_pos = self.cursor_pos();
             self.set_cursor_pos(panel_pos);
 
             self.add_item(
-                tb_id,
-                Vec2::new(panel_size.x, p_titlebar_height),
+                p.move_id,
+                Vec2::new(panel_size.x, p.titlebar_height),
                 ItemFlags::RAW,
             );
 
-            // let p = self.panels.get_mut(&id).unwrap();
-
+            let p = &self.panels[id];
             let button_size = Vec2::new(25.0, 25.0);
             self.set_cursor_pos(panel_pos);
-            self.move_cursor(Vec2::new(0.0, (p_titlebar_height - button_size.y) / 2.0));
+            self.move_cursor(Vec2::new(0.0, (p.titlebar_height - button_size.y) / 2.0));
             self.move_cursor(Vec2::new(panel_size.x - 15.0 - button_size.x, 0.0));
 
             if is_window_panel {
-                self.move_cursor(Vec2::new(-10.0 - button_size.x, 0.0));
-                let p = self.panels.get_mut(&id).unwrap();
-                let max_id = p.gen_id("max");
+                self.move_cursor(Vec2::new((-10.0 - button_size.x) * 2.0, 0.0));
+                let min_id = self.panels[id].gen_id("min");
+                self.add_item(min_id, button_size, ItemFlags::RAW);
+                let sig = self.get_last_item_signals();
+                let mut color = RGBA::WHITE;
+                if sig.hovering() {
+                    color = RGBA::BLUE;
+                }
+                if sig.released() {
+                    self.window.minimize();
+                }
+
+                let p = &mut self.panels[id];
+                // draw minimize button
+                p.draw(|list| {
+                    list.rect(p.cursor_pos(), p.cursor_pos() + button_size)
+                        .fill(color)
+                        .circle()
+                        .draw()
+                });
+
+                self.move_cursor(Vec2::new(10.0 + button_size.x, 0.0));
+                let max_id = self.panels[id].gen_id("max");
                 self.add_item(max_id, button_size, ItemFlags::RAW);
                 let sig = self.get_last_item_signals();
                 let mut color = RGBA::WHITE;
@@ -317,19 +380,19 @@ impl Context {
                     self.window.toggle_maximize();
                 }
 
-                let p = self.panels.get_mut(&id).unwrap();
-                p.draw_list.add_rect(
-                    p.tmp.cursor_pos,
-                    p.tmp.cursor_pos + button_size,
-                    Some(color),
-                    None,
-                    &[],
-                );
+                let p = &mut self.panels[id];
+                // draw maximize button
+                p.draw(|list| {
+                    list.rect(p.cursor_pos(), p.cursor_pos() + button_size)
+                        .fill(color)
+                        .circle()
+                        .draw()
+                });
 
                 self.move_cursor(Vec2::new(button_size.x + 10.0, 0.0));
             }
 
-            let p = self.panels.get_mut(&id).unwrap();
+            let p = &self.panels[id];
             let close_id = p.gen_id("X");
             self.add_item(close_id, button_size, ItemFlags::RAW);
 
@@ -340,24 +403,74 @@ impl Context {
                 color = RGBA::RED;
             }
             if sig.pressed() {
-                let p = self.panels.get_mut(&id).unwrap();
-                p.close_pressed = true;
+                self.panels[id].close_pressed = true;
             }
 
-            let p = self.panels.get_mut(&id).unwrap();
-            p.draw_list.add_rect(
-                p.tmp.cursor_pos,
-                p.tmp.cursor_pos + button_size,
-                Some(color),
-                None,
-                &[],
-            );
+            let p = &self.panels[id];
+            // draw close button
+            p.draw(|list| {
+                list.rect(p.cursor_pos(), p.cursor_pos() + button_size)
+                    .fill(color)
+                    .circle()
+                    .draw()
+            });
             self.set_cursor_pos(prev_pos);
             self.last_item_data = None;
         }
-        // p.tmp.cursor_pos = panel_pos + Vec2::splat(10.0);
-        // self.set_cursor_pos(panel_pos);
-        // self.offset_cursor_pos(Vec2::new(panel_size.x - 40.0, 0.0));
+    }
+
+    pub fn update_panel_move(&mut self) {
+        if !self.active_panel_id.is_null() {
+            let p = &mut self.panels[self.active_panel_id];
+            if self.active_id == p.move_id && !p.move_id.is_null() {
+                if self.mouse.dragging(MouseBtn::Left) && self.panel_action.is_none() {
+                    self.panel_action = PanelAction::Move {
+                        id: p.root,
+                        start_pos: p.pos,
+                    }
+                }
+                if !self.mouse.dragging(MouseBtn::Left)
+                    && matches!(self.panel_action, PanelAction::Move { .. })
+                {
+                    self.panel_action = PanelAction::None;
+                }
+            }
+        }
+
+        if let &PanelAction::Move { start_pos, id: drag_id } = &self.panel_action {
+            if self.mouse.dragging(MouseBtn::Left) {
+                if let Some(drag_start) = self.mouse.drag_start(MouseBtn::Left) {
+                    let p = &mut self.panels[drag_id];
+                    let mouse_delta = start_pos - drag_start;
+                    p.move_panel_to(self.mouse.pos + mouse_delta);
+                }
+            }
+        }
+    }
+
+    pub fn end_assert(&mut self, name: Option<&str>) {
+        let p = self.get_current_panel();
+        if let Some(name) = name {
+            assert!(name == &p.name);
+        }
+
+
+        let p = self.get_current_panel();
+        let p_pad = p.padding;
+        // p.id_stack.pop().unwrap();
+        p.pop_id();
+        if !p.id_stack_ref().is_empty() {
+            log::warn!("non empty id stack at ");
+        }
+        // self.offset_cursor_pos(Vec2::splat(p_pad));
+        p.cursor.borrow_mut().max_pos += Vec2::splat(p.padding);
+
+        self.current_panel_stack.pop();
+        self.current_panel = self.current_panel_stack.last().copied().unwrap_or(Id::NULL);
+    }
+
+    pub fn end(&mut self) {
+        self.end_assert(None)
     }
 
     pub fn get_last_item_signals(&self) -> Signals {
@@ -425,22 +538,8 @@ impl Context {
         sig
     }
 
-    pub fn end(&mut self) {
-        let p = get_curr_panel!(mut self);
-        let p_pad = p.padding;
-        p.id_stack.pop().unwrap();
-        if !p.id_stack.is_empty() {
-            log::warn!("non empty id stack at ");
-        }
-        // self.offset_cursor_pos(Vec2::splat(p_pad));
-        p.tmp.cursor_max_pos += Vec2::splat(p.padding);
-
-        self.current_panel_stack.pop();
-        self.current_panel = self.current_panel_stack.last().copied().unwrap_or(Id::NULL);
-    }
-
     pub fn button(&mut self, label: &str, col: RGBA) {
-        let p = get_curr_panel!(mut self);
+        let p = self.get_current_panel();
         let id = p.gen_id(label);
         let size = Vec2::new(label.len() as f32 * 12.0, 12.0);
 
@@ -448,137 +547,95 @@ impl Context {
         self.add_item(id, size, ItemFlags::NONE);
         self.add_item_size(size);
 
-        let p = get_curr_panel!(mut self);
+        // let p = get_curr_panel!(mut self);
+        let p = self.get_current_panel();
         let item_rect = self.last_item_data.unwrap().rect;
-        p.draw_list
-            .add_rect(item_rect.min, item_rect.max, Some(col), None, &[]);
+        p.draw(|list| list.rect(item_rect.min, item_rect.max).fill(col).draw())
     }
 
-    pub fn move_cursor(&mut self, off: Vec2) {
-        let p = get_curr_panel!(mut self);
-        p.tmp.cursor_pos += off;
-        p.tmp.cursor_max_pos = p.tmp.cursor_max_pos.max(p.tmp.cursor_pos);
+    pub fn get_active_panel(&self) -> Option<&Panel> {
+        if self.active_panel_id.is_null() {
+            None
+        } else {
+            Some(&self.panels[self.active_panel_id])
+        }
+    }
+
+    pub fn get_hot_panel(&self) -> Option<&Panel> {
+        if self.hot_panel_id.is_null() {
+            None
+        } else {
+            Some(&self.panels[self.hot_panel_id])
+        }
+    }
+
+    pub fn get_current_panel(&self) -> &Panel {
+        &self.panels[self.current_panel]
+    }
+
+    pub fn move_cursor(&self, offset: Vec2) {
+        self.get_current_panel().move_cursor(offset)
     }
 
     pub fn cursor_pos(&self) -> Vec2 {
-        get_curr_panel!(self).tmp.cursor_pos
+        self.get_current_panel().cursor_pos()
     }
 
-    pub fn set_cursor_pos(&mut self, pos: Vec2) {
-        let p = get_curr_panel!(mut self);
-        p.tmp.cursor_pos = pos;
-        p.tmp.cursor_max_pos = p.tmp.cursor_max_pos.max(p.tmp.cursor_pos);
+    pub fn set_cursor_pos(&self, pos: Vec2) {
+        self.get_current_panel().set_cursor_pos(pos)
     }
 
-    pub fn add_item_size(&mut self, size: Vec2) {
-        let p = get_curr_panel!(mut self);
-        let rect = Rect::from_min_size(p.tmp.cursor_pos, size);
+    pub fn add_item_size(&self, size: Vec2) {
+        let p = self.get_current_panel();
+        let rect = Rect::from_min_size(p.cursor_pos(), size);
 
+        let mut cursor = p.cursor.borrow_mut();
         match p.layout {
             Layout::Vertical => {
-                p.tmp.cursor_max_pos = p.tmp.cursor_max_pos.max(rect.max);
-                p.tmp.cursor_pos.y += size.y;
+                cursor.max_pos = cursor.max_pos.max(rect.max);
+                cursor.pos.y += size.y;
             }
             Layout::Horizontal => {
-                p.tmp.cursor_max_pos = p.tmp.cursor_max_pos.max(rect.max);
-                p.tmp.cursor_pos.x += size.x;
+                cursor.max_pos = cursor.max_pos.max(rect.max);
+                cursor.pos.x += size.x;
             }
         }
     }
 
     // pub fn add_item(&mut self, id: Id, bb: Rect)
     pub fn add_item(&mut self, id: Id, size: Vec2, flags: ItemFlags) {
-        let p = get_curr_panel!(mut self);
-        let p_draw_order = p.draw_order;
+        // let p = self.get_current_panel();
+        let p = &self.panels[self.current_panel];
+        let draw_order = p.draw_order;
+        let move_id = p.move_id;
+        let root = p.root;
+        let pos = p.pos;
 
-        if self.last_item_data.is_some() && !flags.contains(ItemFlags::RAW) {
+        if self.last_item_data.is_some() && !flags.has(ItemFlags::RAW) {
             match p.layout {
                 Layout::Vertical => {
-                    p.tmp.cursor_pos.y += p.spacing;
+                    p.cursor.borrow_mut().pos.y += p.spacing;
                 }
                 Layout::Horizontal => {
-                    p.tmp.cursor_pos.x += p.spacing;
+                    p.cursor.borrow_mut().pos.x += p.spacing;
                 }
             }
         }
 
-        let bb = Rect::from_min_size(p.tmp.cursor_pos, size);
+        let bb = Rect::from_min_size(p.cursor_pos(), size);
         if bb.contains(self.mouse.pos) {
-            let is_over = if self.hot_panel_id.is_null() {
-                true
-            } else {
-                let hot_p = get_panel!(self: self.hot_panel_id);
-                hot_p.draw_order >= p_draw_order
-            };
-            // if self.hot_panel_id.is_null() || self.hot_panel_id == p.id
-            if is_over {
+            // let is_over = if let Some(hot) = self.get_hot_panel() {
+            //     hot.draw_order > draw_order
+            // } else {
+            //     true
+            // };
+            // if is_over
+
+            // TODO[CHECK]: is this correct?, maybe use draw order?
+            if self.hot_panel_id == p.id || self.hot_panel_id.is_null() {
                 self.hot_id = id;
             }
         }
-
-        let p = get_curr_panel!(mut self);
-
-        if self.mouse.pressed(MouseBtn::Left)
-            && !self.mouse.dragging(MouseBtn::Left)
-            && self.panel_action.is_none()
-        {
-            self.active_id = self.hot_id;
-            self.active_panel_id = self.hot_panel_id;
-        }
-
-        if self.active_id == p.move_id {
-            if self.mouse.dragging(MouseBtn::Left) && self.panel_action.is_none() {
-                self.panel_action = PanelAction::Drag {
-                    id: p.tmp.root,
-                    start_pos: p.pos,
-                }
-            }
-            if !self.mouse.dragging(MouseBtn::Left)
-                && matches!(self.panel_action, PanelAction::Drag { .. })
-            {
-                self.panel_action = PanelAction::None;
-            }
-
-            match self.panel_action {
-                PanelAction::Resize { dir, id, prev_rect } => {}
-                PanelAction::Drag { start_pos, id } => {
-                    let drag_start = self.mouse.drag_start(MouseBtn::Left).unwrap();
-                    let delta = start_pos - drag_start;
-                    p.pos = self.mouse.pos + delta;
-
-                    let p_rect = Rect::from_min_size(p.pos, p.size);
-                    let w_size = self.window.window_size();
-                    let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
-                    if !w_rect.contains_rect(p_rect) && self.ext_window.is_none() {
-                        let p_size = p_rect.size();
-                        // self.requested_windows.push((Vec2::new(p_size.x, p_size.y - p.titlebar_height), self.window.window_pos() + p_rect.min));
-                        self.requested_windows
-                            .push((p_size, self.window.window_pos() + p_rect.min));
-                    }
-                }
-                PanelAction::None => (),
-            }
-            // if let Some(MovingPanelData { panel_id, pre_pos }) = self.moving_panel_data {
-            //     let drag_start = self.mouse.drag_start(MouseBtn::Left).unwrap();
-            //     let delta = pre_pos - drag_start;
-            //     p.pos = self.mouse.pos + delta;
-
-            //     let p_rect = Rect::from_min_size(p.pos, p.size);
-            //     let w_size = self.window.window_size();
-            //     let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
-            //     if !w_rect.contains_rect(p_rect) && self.ext_window.is_none() {
-
-            //         let p_size = p_rect.size();
-            //         // self.requested_windows.push((Vec2::new(p_size.x, p_size.y - p.titlebar_height), self.window.window_pos() + p_rect.min));
-            //         self.requested_windows.push((p_size, self.window.window_pos() + p_rect.min));
-            //     }
-            // }
-        }
-
-        // // debug
-        // {
-        //     p.draw_list.add_rect(rect.min, rect.max, Some(RGBA::CARMINE), None, 0.0);
-        // }
 
         self.last_item_data = Some(LastItemData { id, rect: bb });
     }
@@ -593,36 +650,49 @@ impl Context {
 
     pub fn find_panel_by_name(&self, name: &str) -> Id {
         let id = Id::from_str(name);
-        if self.panels.contains_key(&id) {
+        // if self.panels.contains_key(&id) {
+        if self.panels.contains_id(id) {
             id
         } else {
             Id::NULL
         }
     }
 
-    pub fn get_panel_mut(&mut self, id: Id) -> &mut Panel {
-        self.panels.get_mut(&id).unwrap()
+    pub fn get_panel_name(&self, id: Id) -> Option<String> {
+        if !id.is_null() {
+            Some(self.panels[id].name.clone())
+        } else {
+            None
+        }
     }
 
     pub fn bring_panel_to_front(&mut self, panel_id: Id) {
-        let p = &self.panels[&panel_id];
-        assert!(p.tmp.root == panel_id);
-        let curr_order = p.draw_order;
-        assert!(self.draw_order[curr_order] == panel_id);
-        if *self.draw_order.last().unwrap() == panel_id {
+        assert_eq!(self.panels.len(), self.draw_order.len());
+
+        let root_id = {
+            let p = &self.panels[panel_id];
+            p.root
+        };
+
+        let curr_order = self.panels[root_id].draw_order;
+        assert!(self.draw_order[curr_order] == root_id);
+
+        let new_order = self.draw_order.len() - 1;
+        if self.draw_order[new_order] == root_id {
             return;
         }
 
-        let new_order = self.draw_order.len() - 1;
         for i in curr_order..new_order {
-            self.draw_order[i] = self.draw_order[i + 1];
-            self.get_panel_mut(self.draw_order[i]).draw_order -= 1;
-            assert!(self.panels[&self.draw_order[i]].draw_order == i);
+            let moved = self.draw_order[i + 1];
+            self.draw_order[i] = moved;
+            self.panels[moved].draw_order = i;
+            assert_eq!(self.panels[moved].draw_order, i);
         }
 
-        self.draw_order[new_order] = panel_id;
-        self.get_panel_mut(panel_id).draw_order = new_order;
+        self.draw_order[new_order] = root_id;
+        self.panels[root_id].draw_order = new_order;
     }
+
 
     pub fn begin_frame(&mut self) {
         self.draw.clear();
@@ -631,36 +701,72 @@ impl Context {
         self.hot_id = Id::NULL;
 
         // if !self.window.is_decorated() {
-        self.next_panel_data.pos = Some(Vec2::ZERO);
+        self.next.pos = Some(Vec2::ZERO);
         let win_size = self.window.window_size();
-        self.next_panel_data.size = Some(win_size);
+        self.next.size = Some(win_size);
+        self.next.corner_radius = 0.0;
         // TODO
         // self.window
-        let flags = if self.window.is_decorated() {
-            PanelFlags::NO_TITLEBAR
-        } else {
-            PanelFlags::NONE
-        };
+        
+        // NO_MOVE because the window panel dragging is handled by the window, 
+        // not the panel
+        let mut flags = PanelFlags::NO_FOCUS | PanelFlags::NO_MOVE;
+
+        if self.window.is_decorated() {
+            flags |= PanelFlags::NO_TITLEBAR;
+        }
+
         self.begin_ex("#ROOT_PANEL", flags);
         // }
 
         // let p_info: Vec<_> = self.panels.iter().map(|(_, p)| (p.name.clone(), p.draw_order)).collect();
         // println!("{:#?}", p_info);
-        let id = self.find_panel_by_name("#ROOT_PANEL");
-        let root_panel = self.panels.get_mut(&id).unwrap();
+        let root_panel = &mut self.panels[self.current_panel];
         root_panel.is_window_panel = true;
         if root_panel.close_pressed {
             self.close_pressed = true;
         }
 
-        self.draw_text("Hello", Vec2::new(400.0, 300.0));
-        self.draw_text("World", Vec2::new(500.0, 400.0));
+        self.debug_window();
+    }
+
+    pub fn debug_window(&mut self) {
+        self.next.bg_color = RGBA::MAGENTA;
+        self.next.outline = Some((RGBA::DARK_BLUE, 5.0));
+        self.begin("#DEBUG");
+        let hot_name = self.get_panel_name(self.prev_hot_panel_id);
+        let active_name = self.get_panel_name(self.prev_active_panel_id);
+        let msg = format!("hot: {:?}\nactive: {:?}\n", hot_name, active_name);
+        self.draw_text(&msg, Vec2::new(400.0, 300.0));
+        self.end();
     }
 
     pub fn end_frame(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        self.end();
-        assert!(!self.panels.contains_key(&Id::NULL));
-        self.build_draw_data();
+        if self.mouse.pressed(MouseBtn::Left)
+            && !self.mouse.dragging(MouseBtn::Left)
+            && self.panel_action.is_none()
+        {
+            self.active_id = self.hot_id;
+            self.active_panel_id = self.hot_panel_id;
+
+            if !self.active_panel_id.is_null() {
+                self.bring_panel_to_front(self.active_panel_id);
+            }
+        }
+
+        self.update_panel_move();
+
+        self.prev_hot_panel_id = self.hot_panel_id;
+        self.prev_active_panel_id = self.active_panel_id;
+
+        self.end_assert(Some("#ROOT_PANEL"));
+
+        if !self.draw_debug {
+            self.build_draw_data();
+        } else {
+            self.build_dbg_draw_data();
+        }
+
         self.frame_count += 1;
         self.mouse.end_frame();
         self.last_item_data = None;
@@ -676,16 +782,18 @@ impl Context {
             window.set_window_size(size.x as u32, size.y as u32);
             window.set_window_pos(*pos);
             self.ext_window = Some(window);
-        } else if !self.requested_windows.is_empty() {
-            // let (size, pos) = self.requested_windows.last().unwrap();
-            // self.ext_window.as_mut().unwrap().resize(size.x as u32, size.y as u32, &self.draw.wgpu.device);
         }
     }
 
     pub fn shape_text(&mut self, text: &str, font_size: f32) -> &ShapedText {
         let itm = TextItem::new(text.into(), font_size, 1.0, "Roboto");
         let shaped_text = if !self.text_item_cache.contains_key(&itm) {
-            let shaped_text = shape_text_item(itm.clone(), &mut self.font_table, &mut self.glyph_cache, &self.draw.wgpu);
+            let shaped_text = shape_text_item(
+                itm.clone(),
+                &mut self.font_table,
+                &mut self.glyph_cache,
+                &self.draw.wgpu,
+            );
             self.text_item_cache.entry(itm).or_insert(shaped_text)
         } else {
             self.text_item_cache.get(&itm).unwrap()
@@ -694,35 +802,76 @@ impl Context {
     }
 
     pub fn draw_text(&mut self, text: &str, pos: Vec2) {
-        // TODO[NOTE]: remove clone
+        // TODO[NOTE]: try to remove clone
         let shape = self.shape_text(text, 32.0).clone();
-        let p = get_curr_panel!(mut self);
-        // let itm = TextItem::new(text.into(), 32.0, 1.0, "Roboto");
+        let p = self.get_current_panel();
+
         for g in shape.glyphs.iter() {
-            p.draw_list.add_rect_uv(g.meta.pos + pos, g.meta.pos + g.meta.size + pos, g.meta.uv_min, g.meta.uv_max, 1);
+            let min = g.meta.pos + pos;
+            let max = min + g.meta.size;
+            let uv_min = g.meta.uv_min;
+            let uv_max = g.meta.uv_max;
+
+            p.draw(|list| {
+                list.rect(min, max)
+                    .texture_uv(uv_min, uv_max, 1)
+                    .draw()
+            })
         }
     }
 
     pub fn build_draw_data(&mut self) {
-        let panels = &mut self.panels;
+        let panels = &self.panels;
         let draw_buff = &mut self.draw.draw_buffer;
 
-        for (_, f) in panels {
-            for cmd in &f.draw_list.cmd_buffer {
-                let vtx = &f.draw_list.vtx_buffer[cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count];
-                let idx = &f.draw_list.idx_buffer[cmd.idx_offset..cmd.idx_offset + cmd.idx_count];
-
+        for &id in &self.draw_order {
+            let name = self.panels[id].name.clone();
+            let draw_list = self.panels[id].draw_list_ref();
+            for cmd in &draw_list.cmd_buffer {
+                let vtx = &draw_list.vtx_buffer[cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count];
+                let idx = &draw_list.idx_buffer[cmd.idx_offset..cmd.idx_offset + cmd.idx_count];
                 draw_buff.push(vtx, idx);
+            }
+        }
+    }
+
+    pub fn build_dbg_draw_data(&mut self) {
+        let panels = &self.panels;
+        let draw_buff = &mut self.draw.draw_buffer;
+
+        for &id in &self.draw_order {
+            let draw_list = self.panels[id].draw_list_ref();
+            for cmd in &draw_list.cmd_buffer {
+                let vtx = &draw_list.vtx_buffer[cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count];
+                let idx = &draw_list.idx_buffer[cmd.idx_offset..cmd.idx_offset + cmd.idx_count];
+
+                for i in idx.chunks_exact(3) {
+                    let v0 = vtx[i[0] as usize];
+                    let v1 = vtx[i[1] as usize];
+                    let v2 = vtx[i[2] as usize];
+                    let cols = [v0.col, v1.col, v2.col, v0.col];
+                    let path = [v0.pos, v1.pos, v2.pos, v0.pos];
+
+                    let (mut vtx, idx) = tessellate_line(&path, cols[0], 1.5, true);
+                    vtx.iter_mut().enumerate().for_each(|(i, v)| {
+                        v.col = cols[i % cols.len()];
+                    });
+
+                    draw_buff.push(&vtx, &idx);
+                }
             }
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Panel {
     pub name: String,
     pub id: Id,
     pub move_id: Id,
+    pub flags: PanelFlags,
+
+    pub root: Id,
 
     pub bg_color: RGBA,
     pub outline: Option<(RGBA, f32)>,
@@ -736,8 +885,6 @@ pub struct Panel {
     pub titlebar_height: f32,
     pub layout: Layout,
 
-    pub draw_list: DrawList,
-    pub id_stack: Vec<Id>,
     pub draw_order: usize,
 
     pub last_frame_used: u64,
@@ -745,7 +892,20 @@ pub struct Panel {
     pub close_pressed: bool,
     pub is_window_panel: bool,
 
-    pub tmp: TempPanelData,
+    // try to not borrow outside of impl Panel { ... }
+    pub draw_list: RefCell<DrawList>,
+    pub id_stack: RefCell<Vec<Id>>,
+    pub cursor: RefCell<Cursor>,
+}
+
+impl fmt::Debug for Panel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Panel")
+            .field("name", &self.name)
+            .field("id", &format!("{}", self.id))
+            .field("order", &self.draw_order)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Panel {
@@ -753,6 +913,8 @@ impl Panel {
         Self {
             name: name.to_string(),
             id: Id::from_str(name),
+            root: Id::NULL,
+            flags: PanelFlags::NONE,
             padding: 20.0,
             spacing: 10.0,
             pos: Vec2::splat(30.0),
@@ -768,55 +930,155 @@ impl Panel {
             size: Vec2::ZERO,
             frame_created: 0,
             last_frame_used: 0,
-            draw_list: DrawList::new(),
-            id_stack: Vec::new(),
+            // draw_list: DrawList::new(),
+            // id_stack: Vec::new(),
             close_pressed: false,
             layout: Layout::Vertical,
             is_window_panel: false,
-            tmp: TempPanelData::default(),
+
+            draw_list: RefCell::new(DrawList::new()),
+            id_stack: RefCell::new(Vec::new()),
+            cursor: RefCell::new(Cursor::default()),
         }
     }
 
-    pub fn push_id(&mut self, id: Id) {
-        self.id_stack.push(id);
+    pub fn push_id(&self, id: Id) {
+        self.id_stack.borrow_mut().push(id);
     }
 
-    pub fn pop_id(&mut self) -> Id {
-        self.id_stack.pop().unwrap()
+    pub fn pop_id(&self) -> Id {
+        self.id_stack.borrow_mut().pop().unwrap()
     }
 
     pub fn gen_id(&self, label: &str) -> Id {
         use std::hash::{Hash, Hasher};
-        let seed = self.id_stack.last().unwrap_or(&self.id);
-        let mut hasher = rustc_hash::FxHasher::default();
+        let ids = &self.id_stack.borrow();
+        let seed = ids.last().expect("at least self.id should be in the stack");
+        let mut hasher = ahash::AHasher::default();
         seed.hash(&mut hasher);
         label.hash(&mut hasher);
         Id(hasher.finish().max(1))
     }
 
     pub fn clear_temp_data(&mut self) {
-        self.tmp = TempPanelData::default();
+        self.draw_list.get_mut().clear();
+        self.root = Id::NULL;
     }
 
-    pub fn draw_titlebar() {}
-}
+    pub fn id_stack_ref(&self) -> Ref<'_, Vec<Id>> {
+        self.id_stack.borrow()
+    }
+    // pub fn id_stack_len(&self) -> usize {
+    //     self.mut_panel_data.id_stack.borrow().len()
+    // }
 
-flags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct PanelFlags: u32 {
-        const NONE = 0;
-        const NO_TITLEBAR = 1 << 0;
+    pub fn draw_list_ref(&self) -> std::cell::Ref<'_, DrawList> {
+        self.draw_list.borrow()
+    }
+
+    pub fn set_cursor_pos(&self, pos: Vec2) {
+        self.cursor.borrow_mut().pos = pos;
+    }
+
+    pub fn init_content_cursor(&self, pos: Vec2) {
+        let mut c = self.cursor.borrow_mut();
+        c.content_start_pos = pos;
+        c.pos = pos;
+        c.max_pos = pos;
+    }
+
+    pub fn set_cursor_max_pos(&self, pos: Vec2) {
+        self.cursor.borrow_mut().max_pos = pos;
+    }
+
+    pub fn cursor_reserve_size(&self, size: Vec2) {
+        let mut c = self.cursor.borrow_mut();
+        c.max_pos = c.max_pos.max(c.pos + size);
+    }
+
+    pub fn cursor_pos(&self) -> Vec2 {
+        self.cursor.borrow().pos
+    }
+
+    pub fn cursor_max_pos(&self) -> Vec2 {
+        self.cursor.borrow().max_pos
+    }
+
+    pub fn cursor_content_start_pos(&self) -> Vec2 {
+        self.cursor.borrow().content_start_pos
+    }
+
+    pub fn move_cursor(&self, offset: Vec2) {
+        let mut c = self.cursor.borrow_mut();
+        c.pos += offset;
+        c.max_pos = c.max_pos.max(c.pos);
+    }
+
+    /// sets the new panel position
+    ///
+    /// will also update the cursor so we dont get items lagging behind
+    pub fn move_panel_to(&mut self, pos: Vec2) {
+        let mut c = self.cursor.get_mut();
+        let prev_pos = self.pos;
+        self.pos = pos;
+
+        let pos_d = c.pos - prev_pos;
+        let max_pos_d = c.max_pos - prev_pos;
+        let content_start_pos_d = c.content_start_pos - prev_pos;
+
+        c.pos = pos_d + pos;
+        c.max_pos = max_pos_d + pos;
+        c.content_start_pos = content_start_pos_d + pos;
+    }
+
+    pub fn draw(&self, draw_fn: impl FnOnce(&mut DrawList)) {
+        let draw_list = &mut self.draw_list.borrow_mut();
+        draw_fn(draw_list);
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct TempPanelData {
-    pub root: Id,
-    pub parent: Id,
+flags!(ItemFlags: RAW);
+flags!(PanelFlags: NO_TITLEBAR, NO_FOCUS, NO_MOVE);
 
-    pub cursor_content_start_pos: Vec2,
-    pub cursor_pos: Vec2,
-    pub cursor_max_pos: Vec2,
+#[derive(Debug, Clone)]
+pub struct MutPanelData {
+    pub draw_list: RefCell<DrawList>,
+    pub id_stack: RefCell<Vec<Id>>,
+    pub cursor: RefCell<Cursor>,
+    // pub cursor_content_start_pos: Vec2,
+    // pub cursor_pos: Vec2,
+    // pub cursor_max_pos: Vec2,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Cursor {
+    pub pos: Vec2,
+    pub max_pos: Vec2,
+    pub content_start_pos: Vec2,
+}
+
+macro_rules! cursor_fn {
+    ($fn:ident( $($e:expr),* )) => {};
+}
+
+impl MutPanelData {
+    pub fn new() -> Self {
+        Self {
+            // root: Id::NULL,
+            draw_list: DrawList::new().into(),
+            id_stack: Vec::new().into(),
+            cursor: Cursor {
+                pos: Vec2::ZERO,
+                max_pos: Vec2::ZERO,
+                content_start_pos: Vec2::ZERO,
+            }
+            .into(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::new();
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -831,6 +1093,8 @@ pub struct NextPanelData {
     pub content_size: Option<Vec2>,
     pub bg_color: RGBA,
     pub outline: Option<(RGBA, f32)>,
+    // TODO[NOTE]: delegate to style
+    pub corner_radius: f32,
 }
 
 impl Default for NextPanelData {
@@ -846,12 +1110,13 @@ impl NextPanelData {
             placement: Placement::TopLeft,
             layout: Layout::Vertical,
             size: None,
-            titlebar_height: 50.0,
+            titlebar_height: 40.0,
             min_size: Vec2::INFINITY,
             max_size: Vec2::ZERO,
             content_size: None,
             bg_color: RGBA::INDIGO,
             outline: None,
+            corner_radius: 10.0,
         }
     }
 
@@ -868,7 +1133,7 @@ impl NextPanelData {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PanelAction {
     Resize { dir: Dir, id: Id, prev_rect: Rect },
-    Drag { start_pos: Vec2, id: Id },
+    Move { start_pos: Vec2, id: Id },
     None,
 }
 
@@ -881,52 +1146,153 @@ impl PanelAction {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct PanelMap {
+    map: HashMap<Id, Panel>,
+    // current_id: Id,
+    // hot_id: Id,
+    // active_id: Id,
+}
+
+impl PanelMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn contains_id(&self, id: Id) -> bool {
+        self.map.contains_key(&id)
+    }
+
+    pub fn get(&self, id: Id) -> Option<&Panel> {
+        self.map.get(&id)
+    }
+
+    pub fn get_mut(&mut self, id: Id) -> Option<&mut Panel> {
+        self.map.get_mut(&id)
+    }
+
+    // pub fn hot(&self) -> Option<&Panel> {
+    //     self.get(self.hot_id)
+    // }
+
+    // pub fn active(&self) -> Option<&Panel> {
+    //     self.get(self.active_id)
+    // }
+
+    // pub fn current(&self) -> &Panel {
+    //     self.get(self.current_id).unwrap()
+    // }
+
+    pub fn insert(&mut self, id: Id, panel: Panel) {
+        assert!(!id.is_null());
+        self.map.insert(id, panel);
+    }
+}
+
+impl<'a> IntoIterator for &'a PanelMap {
+    type Item = (&'a Id, &'a Panel);
+    type IntoIter = std::collections::hash_map::Iter<'a, Id, Panel>;
+    fn into_iter(self) -> Self::IntoIter {
+        (&self.map).iter()
+    }
+}
+
+impl std::ops::Index<Id> for PanelMap {
+    type Output = Panel;
+
+    fn index(&self, id: Id) -> &Self::Output {
+        self.get(id).unwrap()
+    }
+}
+
+impl std::ops::IndexMut<Id> for PanelMap {
+    fn index_mut(&mut self, id: Id) -> &mut Self::Output {
+        self.get_mut(id).unwrap()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LastItemData {
     pub id: Id,
     pub rect: Rect,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Id(u64);
+macro_rules! id_type {
+    ($id_ty:ident) => {
+        #[derive(Default, Clone, Copy, PartialEq, Eq)]
+        pub struct $id_ty(u64);
 
-impl Id {
-    pub const NULL: Id = Id(0);
+        impl $id_ty {
+            pub const NULL: $id_ty = $id_ty(0);
 
-    pub fn from_str(s: &str) -> Self {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = rustc_hash::FxHasher::default();
-        s.hash(&mut hasher);
-        Self(hasher.finish().max(1))
-    }
+            pub fn from_str(s: &str) -> Self {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = ahash::AHasher::default();
+                s.hash(&mut hasher);
+                Self(hasher.finish().max(1))
+            }
 
-    pub fn is_null(&self) -> bool {
-        *self == Self::NULL
-    }
+            pub fn is_null(&self) -> bool {
+                self.0 == 0
+            }
+        }
+
+        impl fmt::Debug for $id_ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let id = format!("{self}");
+                f.debug_tuple(&stringify!($id_ty)).field(&id).finish()
+            }
+        }
+
+        impl fmt::Display for $id_ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let mut n = self.0;
+                if n == 0 {
+                    return write!(f, "0");
+                }
+                let mut buf = Vec::new();
+                while n > 0 {
+                    let rem = (n % 36) as u8;
+                    let ch = if rem < 10 {
+                        b'0' + rem
+                    } else {
+                        b'A' + (rem - 10)
+                    };
+                    buf.push(ch);
+                    n /= 36;
+                }
+                buf.reverse();
+                let s = std::str::from_utf8(&buf).unwrap();
+                write!(f, "{}", s)
+            }
+        }
+
+        impl hash::Hash for Id {
+            fn hash<H: hash::Hasher>(&self, state: &mut H) {
+                assert!(!self.is_null());
+                self.0.hash(state)
+            }
+        }
+
+        // impl PartialEq for Id {
+        //     fn eq(&self, other: &Self) -> bool {
+        //         if self.is_null() || other.is_null() {
+        //             false
+        //         } else {
+        //             self.0 == other.0
+        //         }
+        //     }
+        // }
+
+        // impl Eq for Id {}
+    };
 }
 
-impl fmt::Display for Id {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut n = self.0;
-        if n == 0 {
-            return write!(f, "0");
-        }
-        let mut buf = Vec::new();
-        while n > 0 {
-            let rem = (n % 36) as u8;
-            let ch = if rem < 10 {
-                b'0' + rem
-            } else {
-                b'A' + (rem - 10)
-            };
-            buf.push(ch);
-            n /= 36;
-        }
-        buf.reverse();
-        let s = std::str::from_utf8(&buf).unwrap();
-        write!(f, "{}", s)
-    }
-}
+id_type!(Id);
 
 /// A single draw command
 #[derive(Debug, Clone, Copy, Default)]
@@ -1009,6 +1375,130 @@ impl DrawList {
         cmd.idx_count += idx.len();
     }
 
+    pub fn rect(&mut self, min: Vec2, max: Vec2) -> DrawRect<'_> {
+        DrawRect {
+            draw_list: self,
+            min,
+            max,
+            uv_min: None,
+            uv_max: None,
+            texture_id: 0,
+            fill: None,
+            outline: None,
+            corner_radii: [0.0; 4],
+        }
+    }
+
+    pub fn add_rect_full(
+        &mut self,
+        mut min: Vec2,
+        mut max: Vec2,
+        uv_min: Option<Vec2>,
+        uv_max: Option<Vec2>,
+        tex_id: u32,
+        fill: Option<RGBA>,
+        outline: Option<(RGBA, f32, OutlinePlacement)>,
+        round: &[f32],
+    ) {
+        let uv_a = uv_min.unwrap_or(Vec2::ZERO);
+        let uv_b = uv_max.unwrap_or(Vec2::new(1.0, 1.0));
+
+        if tex_id != 0 {
+            self.push_texture(tex_id);
+        }
+
+        if round.is_empty() {
+            if let Some(fill_col) = fill {
+                if tex_id == 0 {
+                    let vtx = [
+                        Vertex::new(min.with_y(max.y), fill_col, Vec2::ZERO, 0),
+                        Vertex::new(max, fill_col, Vec2::ZERO, 0),
+                        Vertex::new(min.with_x(max.x), fill_col, Vec2::ZERO, 0),
+                        Vertex::new(min, fill_col, Vec2::ZERO, 0),
+                    ];
+                    let idx = [0u32, 1, 2, 0, 2, 3];
+                    self.push_vtx_idx(&vtx, &idx);
+                } else {
+                    let tint = fill_col;
+                    let vtx = [
+                        Vertex::new(min.with_y(max.y), tint, uv_a.with_y(uv_b.y), tex_id),
+                        Vertex::new(max, tint, uv_b, tex_id),
+                        Vertex::new(min.with_x(max.x), tint, uv_a.with_x(uv_b.x), tex_id),
+                        Vertex::new(min, tint, uv_a, tex_id),
+                    ];
+                    let idx = [0u32, 1, 2, 0, 2, 3];
+                    self.push_vtx_idx(&vtx, &idx);
+                }
+            } else if tex_id != 0 {
+                // texture present but no explicit fill: draw textured quad with white tint
+                let white = RGBA::WHITE;
+                let vtx = [
+                    Vertex::new(min.with_y(max.y), white, uv_a.with_y(uv_b.y), tex_id),
+                    Vertex::new(max, white, uv_b, tex_id),
+                    Vertex::new(min.with_x(max.x), white, uv_a.with_x(uv_b.x), tex_id),
+                    Vertex::new(min, white, uv_a, tex_id),
+                ];
+                let idx = [0u32, 1, 2, 0, 2, 3];
+                self.push_vtx_idx(&vtx, &idx);
+            }
+
+            if let Some((col, width, placement)) = outline {
+                let offset = match placement {
+                    OutlinePlacement::Center => 0.0,
+                    OutlinePlacement::Inner => -width * 0.5,
+                    OutlinePlacement::Outer => width * 0.5,
+                };
+                let mut o_min = min - Vec2::splat(offset);
+                let mut o_max = max + Vec2::splat(offset);
+                let pts = [o_min.with_y(o_max.y), o_max, o_max.with_x(o_min.x), o_min];
+                let (vtx, idx) = tessellate_line(&pts, col, width, true);
+                self.push_vtx_idx(&vtx, &idx);
+            }
+
+            return;
+        }
+
+        // rounded case
+        self.path_clear();
+
+        if let Some((_, width, placement)) = outline {
+            let offset = match placement {
+                OutlinePlacement::Center => 0.0,
+                OutlinePlacement::Inner => -width * 0.5,
+                OutlinePlacement::Outer => width * 0.5,
+            };
+            min -= Vec2::splat(offset);
+            max += Vec2::splat(offset);
+        }
+
+        self.path_rect(min, max, round);
+
+        if tex_id == 0 {
+            if let Some(fill_col) = fill {
+                let (vtx, idx) = tessellate_convex_fill(&self.path, fill_col, true);
+                self.push_vtx_idx(&vtx, &idx);
+            }
+        } else {
+            let tint = fill.unwrap_or(RGBA::WHITE);
+            let start = self.vtx_buffer.len();
+            let (vtx, idx) = tessellate_convex_fill(&self.path, tint, true);
+            self.push_vtx_idx(&vtx, &idx);
+            let end = start + vtx.len();
+            self.dist_lin_uv(start, end, min, max, uv_a, uv_b, true, tex_id);
+        }
+
+        if let Some((col, width, _)) = outline {
+            let (vtx, idx) = tessellate_line(&self.path, col, width, true);
+            self.push_vtx_idx(&vtx, &idx);
+        }
+
+        self.path_clear();
+    }
+
+    pub fn add_rect_uv(&mut self, min: Vec2, max: Vec2, uv_min: Vec2, uv_max: Vec2, tex_id: u32) {
+        self.add_rect_impl(min, max, RGBA::WHITE, uv_min, uv_max, tex_id);
+    }
+
     pub fn add_rect_impl(
         &mut self,
         min: Vec2,
@@ -1030,10 +1520,6 @@ impl DrawList {
         let idx = [0, 1, 2, 0, 2, 3];
 
         self.push_vtx_idx(&vtx, &idx);
-    }
-
-    pub fn add_rect_uv(&mut self, min: Vec2, max: Vec2, uv_min: Vec2, uv_max: Vec2, tex_id: u32) {
-        self.add_rect_impl(min, max, RGBA::WHITE, uv_min, uv_max, tex_id);
     }
 
     pub fn add_rect(
@@ -1495,17 +1981,10 @@ pub fn is_in_resize_region(r: Rect, pnt: Vec2, thr: f32) -> Option<Dir> {
     }
 }
 
-flags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct ItemFlags: u32 {
-        const NONE = 0;
-        const RAW = 1;
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum OutlinePlacement {
     Outer,
+    #[default]
     Center,
     Inner,
 }
@@ -1562,7 +2041,7 @@ impl FontTable {
         use hash::{Hash, Hasher};
         let db = self.sys.db_mut();
         let ids = db.load_font_source(ctext::fontdb::Source::Binary(std::sync::Arc::new(bytes)));
-        let mut hasher = rustc_hash::FxHasher::default();
+        let mut hasher = ahash::AHasher::default();
         ids.hash(&mut hasher);
         name.hash(&mut hasher);
         let id = hasher.finish();
@@ -1572,36 +2051,33 @@ impl FontTable {
 
     pub fn get_font_attrib<'a>(&self, name: &'a str) -> ctext::Attrs<'a> {
         // let name = self.id_to_name.get(&id).unwrap();
-        let attribs = ctext::Attrs::new()
-            .family(ctext::Family::Name(name));
+        let attribs = ctext::Attrs::new().family(ctext::Family::Name(name));
         attribs
     }
 }
 
-fn load_roboto_font(db: &mut ctext::fontdb::Database) -> ctext::fontdb::ID {
-    let data = include_bytes!("../res/Roboto.ttf").to_vec(); 
-    let ids = db.load_font_source(ctext::fontdb::Source::Binary(std::sync::Arc::new(data)));
-    ids[0]
-}
-
-fn load_phosphor_font(db: &mut ctext::fontdb::Database) -> ctext::fontdb::ID {
-    let data = include_bytes!("../res/Phosphor.ttf").to_vec(); 
-    let ids = db.load_font_source(ctext::fontdb::Source::Binary(std::sync::Arc::new(data)));
-    ids[0]
-}
-
-fn shape_text_item(itm: TextItem, fonts: &mut FontTable, cache: &mut GlyphCache, wgpu: &WGPU) -> ShapedText {
+fn shape_text_item(
+    itm: TextItem,
+    fonts: &mut FontTable,
+    cache: &mut GlyphCache,
+    wgpu: &WGPU,
+) -> ShapedText {
     let mut buffer = ctext::Buffer::new(
         &mut fonts.sys,
         ctext::Metrics {
             font_size: itm.font_size(),
-            line_height: itm.line_height(),
+            line_height: itm.scaled_line_height(),
         },
     );
 
     let font_attrib = fonts.get_font_attrib(itm.font);
     buffer.set_size(&mut fonts.sys, itm.width(), itm.height());
-    buffer.set_text(&mut fonts.sys, &itm.string, &font_attrib, ctext::Shaping::Advanced);
+    buffer.set_text(
+        &mut fonts.sys,
+        &itm.string,
+        &font_attrib,
+        ctext::Shaping::Advanced,
+    );
     buffer.shape_until_scroll(&mut fonts.sys, false);
 
     let mut glyphs = Vec::new();
@@ -1611,7 +2087,8 @@ fn shape_text_item(itm: TextItem, fonts: &mut FontTable, cache: &mut GlyphCache,
     for run in buffer.layout_runs() {
         width = run.line_w.max(width);
         // TODO[CHECK]: is it the sum?
-        height += run.line_height;
+        height = run.line_height.max(height);
+        // height += run.line_height;
 
         for g in run.glyphs {
             let g_phys = g.physical((0.0, 0.0), 1.0);
@@ -1621,7 +2098,6 @@ fn shape_text_item(itm: TextItem, fonts: &mut FontTable, cache: &mut GlyphCache,
             key.y_bin = ctext::SubpixelBin::Three;
 
             if let Some(mut glyph) = cache.get_glyph(key, fonts, wgpu) {
-                // let pos = Vec2::new(phys.x as f32, phys.y as f32 + run.line_y) + glyph.meta.pos;
                 glyph.meta.pos += Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y);
                 glyphs.push(glyph);
             }
@@ -1685,7 +2161,7 @@ pub struct GlyphCache {
     pub texture: gpu::Texture,
     pub alloc: etagere::BucketedAtlasAllocator,
     pub size: u32,
-    pub cached_glyphs: FxHashMap<ctext::CacheKey, GlyphMeta>,
+    pub cached_glyphs: HashMap<ctext::CacheKey, GlyphMeta>,
     pub swash_cache: ctext::SwashCache,
 }
 
@@ -1723,7 +2199,12 @@ impl GlyphCache {
         }
     }
 
-    pub fn get_glyph(&mut self, glyph_key: ctext::CacheKey, fonts: &mut FontTable, wgpu: &WGPU) -> Option<Glyph> {
+    pub fn get_glyph(
+        &mut self,
+        glyph_key: ctext::CacheKey,
+        fonts: &mut FontTable,
+        wgpu: &WGPU,
+    ) -> Option<Glyph> {
         if let Some(&meta) = self.cached_glyphs.get(&glyph_key) {
             return Some(Glyph {
                 texture: self.texture.clone(),
@@ -1734,8 +2215,15 @@ impl GlyphCache {
         self.alloc_new_glyph(glyph_key, fonts, wgpu)
     }
 
-    pub fn alloc_new_glyph(&mut self, glyph_key: ctext::CacheKey, fonts: &mut FontTable, wgpu: &WGPU) -> Option<Glyph> {
-        let img = self.swash_cache.get_image_uncached(&mut fonts.sys, glyph_key)?;
+    pub fn alloc_new_glyph(
+        &mut self,
+        glyph_key: ctext::CacheKey,
+        fonts: &mut FontTable,
+        wgpu: &WGPU,
+    ) -> Option<Glyph> {
+        let img = self
+            .swash_cache
+            .get_image_uncached(&mut fonts.sys, glyph_key)?;
         let x = img.placement.left;
         let y = img.placement.top;
         let w = img.placement.width;
@@ -1759,7 +2247,10 @@ impl GlyphCache {
             }
         };
 
-        let rect = self.alloc.allocate(etagere::Size::new(w as i32, h as i32))?.rectangle;
+        let rect = self
+            .alloc
+            .allocate(etagere::Size::new(w as i32, h as i32))?
+            .rectangle;
 
         wgpu.queue.write_texture(
             wgpu::TexelCopyTextureInfoBase {
@@ -1789,8 +2280,7 @@ impl GlyphCache {
         assert!(self.texture.height() == tex_size);
         let pos = Vec2::new(x as f32, -y as f32);
         let size = Vec2::new(w as f32, h as f32);
-        let uv_min =
-            Vec2::new(rect.min.x as f32, rect.min.y as f32) / tex_size as f32;
+        let uv_min = Vec2::new(rect.min.x as f32, rect.min.y as f32) / tex_size as f32;
         let uv_max = uv_min + size / tex_size as f32;
 
         let meta = GlyphMeta {
@@ -1799,10 +2289,7 @@ impl GlyphCache {
             uv_min,
             uv_max,
         };
-        self.cached_glyphs.insert(
-            glyph_key,
-            meta, 
-        );
+        self.cached_glyphs.insert(glyph_key, meta);
 
         Some(Glyph {
             texture: self.texture.clone(),
@@ -1810,7 +2297,6 @@ impl GlyphCache {
         })
     }
 }
-
 
 pub struct MergedDrawLists {
     pub gpu_vertices: wgpu::Buffer,
@@ -1899,13 +2385,9 @@ impl RenderPassHandle for MergedDrawLists {
 
         let global_uniform = ui_draw::GlobalUniform::new(self.screen_size, proj);
 
-        let bind_group = ui_draw::build_bind_group(
-            global_uniform,
-            self.glyph_texture.view(),
-            wgpu,
-        );
+        let bind_group = ui_draw::build_bind_group(global_uniform, self.glyph_texture.view(), wgpu);
 
-        let (verts, indxs) = self.draw_buffer.get_chunk_data(i as usize).unwrap();
+        let (verts, indxs) = self.draw_buffer.get_chunk_data(i).unwrap();
 
         wgpu.queue
             .write_buffer(&self.gpu_vertices, 0, bytemuck::cast_slice(verts));
@@ -2100,8 +2582,8 @@ impl DrawBuffer {
         }
     }
 
-    pub fn get_chunk_data(&self, chunk_idx: usize) -> Option<(&[Vertex], &[u32])> {
-        self.chunks.get(chunk_idx).map(|chunk| {
+    pub fn get_chunk_data(&self, chunk_idx: u32) -> Option<(&[Vertex], &[u32])> {
+        self.chunks.get(chunk_idx as usize).map(|chunk| {
             let vtx_slice = &self.vtx_alloc[chunk.vtx_ptr..chunk.vtx_ptr + chunk.n_vtx];
             let idx_slice = &self.idx_alloc[chunk.idx_ptr..chunk.idx_ptr + chunk.n_idx];
             (vtx_slice, idx_slice)
@@ -2165,5 +2647,80 @@ impl DrawBuffer {
         c.n_idx += idx.len();
         self.vtx_ptr += vtx.len();
         self.idx_ptr += idx.len();
+    }
+}
+
+pub struct DrawRect<'a> {
+    pub draw_list: &'a mut DrawList,
+    pub min: Vec2,
+    pub max: Vec2,
+    pub uv_min: Option<Vec2>,
+    pub uv_max: Option<Vec2>,
+    pub texture_id: u32,
+    pub fill: Option<RGBA>,
+    pub outline: Option<(RGBA, f32, OutlinePlacement)>,
+    pub corner_radii: [f32; 4],
+}
+
+impl DrawRect<'_> {
+    pub fn fill(mut self, fill: RGBA) -> Self {
+        self.fill = Some(fill);
+        self
+    }
+
+    pub fn outline(mut self, color: RGBA, width: f32, placement: Option<OutlinePlacement>) -> Self {
+        self.outline = Some((color, width, placement.unwrap_or_default()));
+        self
+    }
+
+    pub fn texture_uv(mut self, uv_min: Vec2, uv_max: Vec2, id: u32) -> Self {
+        self.uv_min = Some(uv_min);
+        self.uv_max = Some(uv_max);
+        self.texture_id = id;
+        self
+    }
+
+    pub fn texture(mut self, id: u32) -> Self {
+        self.texture_id = id;
+        self
+    }
+
+    pub fn circle(mut self) -> Self {
+        let width = self.max.x - self.min.x;
+        let height = self.max.y - self.min.y;
+        let rad = width.min(height) / 2.0;
+        self.radius(rad)
+    }
+
+    pub fn radius(self, rad: f32) -> Self {
+        self.radii([rad; 4])
+    }
+
+    pub fn radii(mut self, radii: [f32; 4]) -> Self {
+        self.corner_radii = radii;
+        self
+    }
+
+    pub fn radii_slice(mut self, r: &[f32]) -> Self {
+        if r.len() == 1 {
+            self.radius(r[0])
+        } else if r.len() == 4 {
+            self.radii([r[0], r[1], r[2], r[3]])
+        } else {
+            self
+        }
+    }
+
+    pub fn draw(self) {
+        self.draw_list.add_rect_full(
+            self.min,
+            self.max,
+            self.uv_min,
+            self.uv_max,
+            self.texture_id,
+            self.fill,
+            self.outline,
+            &self.corner_radii,
+        )
     }
 }

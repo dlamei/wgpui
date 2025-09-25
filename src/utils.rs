@@ -1,5 +1,8 @@
 use std::fmt;
 
+pub type HashMap<K, V> = ahash::AHashMap<K, V>;
+pub type HashSet<T> = ahash::AHashSet<T>;
+
 #[cfg(target_arch = "wasm32")]
 pub type Instant = web_time::Instant;
 #[cfg(target_arch = "wasm32")]

@@ -1,13 +1,15 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
     fmt, hash,
     sync::{Arc, Mutex},
 };
 
 use glam::Vec2;
 
-use crate::{mouse, ui, utils};
+use crate::{
+    mouse, ui,
+    utils::{self, HashMap},
+};
 
 #[derive(Debug, Clone)]
 pub struct Texture {
@@ -820,14 +822,14 @@ pub trait ShaderHandle {
 
     fn pipeline_generic_id() -> UUID {
         use std::hash::{Hash, Hasher};
-        let mut hasher = rustc_hash::FxHasher::default();
+        let mut hasher = ahash::AHasher::default();
         Self::RENDER_PIPELINE_ID.hash(&mut hasher);
         UUID(hasher.finish())
     }
 
     fn pipeline_vertex_id(desc: &ShaderTemplates<'_>) -> UUID {
         use std::hash::{Hash, Hasher};
-        let mut hasher = rustc_hash::FxHasher::default();
+        let mut hasher = ahash::AHasher::default();
         Self::RENDER_PIPELINE_ID.hash(&mut hasher);
         for (d, _) in desc {
             d.attributes.hash(&mut hasher);

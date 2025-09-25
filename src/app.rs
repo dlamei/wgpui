@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use glam::{UVec2, Vec2};
 use winit::{
@@ -16,7 +16,7 @@ use crate::{
     rect::Rect,
     ui::{self, WidgetId, WidgetOpt},
     ui2,
-    utils::{self, Duration, Instant, RGBA},
+    utils::{self, Duration, HashMap, Instant, RGBA},
 };
 
 #[derive(Debug, Clone)]
@@ -180,12 +180,13 @@ impl AppSetup {
             use winit::platform::web::WindowExtWebSys;
             if let Some(receiver) = renderer_rec.as_mut() {
                 if let Ok(Some((wgpu, window))) = receiver.try_recv() {
-                    window.core.borrow().raw.set_prevent_default(false);
+                    let window_id = window.id;
+                    window.raw.set_prevent_default(false);
                     window.request_redraw();
                     let size = window.window_size();
                     *self = Self::Init(App::new(wgpu, window));
                     let app = self.init_unwrap();
-                    app.resize_main_window(size.x as u32, size.y as u32);
+                    app.ui2.resize_window(window_id, size.x as u32, size.y as u32);
                     return Some(self.init_unwrap());
                 }
             }
@@ -334,9 +335,15 @@ impl App {
         ui.draw_debug = self.dbg_wireframe;
         ui.begin_frame();
 
-        ui.next_panel_data.bg_color = RGBA::MAGENTA;
-        ui.next_panel_data.outline = Some((RGBA::DARK_BLUE, 5.0));
-        ui.begin("Debug");
+        ui.next.bg_color = RGBA::MAGENTA;
+        ui.next.outline = Some((RGBA::DARK_BLUE, 5.0));
+        ui.begin_ex("Debug", ui2::PanelFlags::NO_TITLEBAR);
+        ui.button("test button", RGBA::WHITE);
+        ui.button("the quick brown fox jumps over the lazy dog", RGBA::WHITE);
+        ui.end();
+
+        ui.next.outline = Some((RGBA::MAGENTA, 5.0));
+        ui.begin("test2");
         ui.button("test button", RGBA::WHITE);
         ui.button("the quick brown fox jumps over the lazy dog", RGBA::WHITE);
         ui.end();

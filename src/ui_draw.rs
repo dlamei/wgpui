@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt};
+use std::fmt;
 
 use cosmic_text as ctext;
 use glam::{Mat4, Vec2};
@@ -10,7 +10,7 @@ use crate::{
     gpu::{self, ShaderHandle, WGPU, WGPUHandle},
     rect::Rect,
     ui::{WidgetFlags, WidgetOpt},
-    utils::RGBA,
+    utils::{HashMap, RGBA},
 };
 
 pub struct AtlasTexture {
