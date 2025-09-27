@@ -79,8 +79,8 @@ macro_rules! sig_fn {
 
 sig_fn!(hovering => HOVERING);
 sig_fn!(mouse_over => MOUSE_OVER);
-sig_fn!(pressed => PRESSED_LEFT , PRESSED_KEYBOARD);
-sig_fn!(clicked => CLICKED_LEFT , PRESSED_KEYBOARD);
+sig_fn!(pressed => PRESSED_LEFT, PRESSED_KEYBOARD);
+sig_fn!(clicked => CLICKED_LEFT, PRESSED_KEYBOARD);
 sig_fn!(double_clicked => DOUBLE_CLICKED_LEFT);
 sig_fn!(dragging => DRAGGING_LEFT);
 sig_fn!(released => RELEASED_LEFT);

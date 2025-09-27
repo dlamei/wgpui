@@ -307,7 +307,7 @@ impl App {
             WE::RedrawRequested => {
                 if id == self.main_window {
                     self.on_update(event_loop);
-                    let pid = self.ui2.find_panel_by_name("#ROOT_PANEL");
+                    let pid = self.ui2.get_panel_with_name("#ROOT_PANEL");
                     if self.ui2.close_pressed {
                         event_loop.exit();
                     }
@@ -336,17 +336,30 @@ impl App {
         ui.draw_debug = self.dbg_wireframe;
         ui.begin_frame();
 
-        ui.next.bg_color = RGBA::MAGENTA;
         ui.next.outline = Some((RGBA::DARK_BLUE, 5.0));
+
+        // if let Some(p) = ui.get_panel_with_name("Debug") {
+        //     ui.next.min_size = p.full_size;
+        // }
         ui.begin_ex("Debug", ui2::PanelFlags::NO_TITLEBAR);
-        ui.button("test button", RGBA::WHITE);
-        ui.button("the quick brown fox jumps over the lazy dog", RGBA::WHITE);
+        ui.set_current_panel_min_size(|prev, full, content| full);
+
+        if ui.button("test button") {
+            println!("test button pressed");
+        }
+        ui.button("the quick brown fox jumps over the lazy dog");
+        ui.text("Hello World");
         ui.end();
 
         ui.next.outline = Some((RGBA::MAGENTA, 5.0));
         ui.begin("test2");
-        ui.button("test button", RGBA::WHITE);
-        ui.button("the quick brown fox jumps over the lazy dog", RGBA::WHITE);
+        ui.button("test button");
+        ui.button("the quick brown fox jumps over the lazy dog");
+
+        static mut check: bool = false;
+        let check_mut = unsafe { &mut *(&raw mut check) };
+        ui.checkbox("checkbox", check_mut);
+
         ui.end();
 
         ui.end_frame(event_loop);

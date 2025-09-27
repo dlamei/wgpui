@@ -7,7 +7,9 @@ use std::{
 use glam::Vec2;
 
 use crate::{
-    mouse, ui,
+    mouse,
+    rect::Rect,
+    ui,
     utils::{self, HashMap},
 };
 
@@ -1118,6 +1120,10 @@ unsafe fn create_static_surface_with_window(
 
 impl Window {
     const DESIRED_MAXIMUM_FRAME_LATENCY: u32 = 0;
+
+    pub fn window_rect(&self) -> Rect {
+        Rect::from_min_size(Vec2::ZERO, self.window_size())
+    }
 
     pub fn set_cursor_icon(&self, icon: mouse::CursorIcon) {
         self.raw.set_cursor(icon);

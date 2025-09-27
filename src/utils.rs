@@ -701,8 +701,10 @@ impl<T, const N: usize> ArrVec<T, N> {
     }
 }
 
-impl<T, const N: usize> ArrVec<T, N> 
-where T: Copy {
+impl<T, const N: usize> ArrVec<T, N>
+where
+    T: Copy,
+{
     pub fn as_padded_arr(&self, pad: T) -> [T; N] {
         let mut res = [pad; N];
         res[0..self.count].copy_from_slice(self.as_slice());

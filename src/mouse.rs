@@ -55,7 +55,11 @@ impl MouseState {
 
     pub fn drag_start(&mut self, button: MouseBtn) -> Option<Vec2> {
         let b = self.buttons[button];
-        if b.dragging { b.press_start_pos } else { None }
+        if b.dragging || b.released {
+            b.press_start_pos
+        } else {
+            None
+        }
     }
 
     pub fn set_button_press(&mut self, button: MouseBtn, pressed: bool) {
@@ -308,7 +312,7 @@ struct ButtonRec {
     pressed: bool,
     double_press: bool,
     // todo maybe use option?
-    press_start_pos: Vec2,
+    press_start_pos_rec: Vec2,
     press_time: Option<Instant>,
     last_release_time: Option<Instant>,
     last_press_was_short: bool,
@@ -336,7 +340,7 @@ impl fmt::Display for ButtonRec {
             write!(
                 f,
                 " @({:.1}, {:.1})",
-                self.press_start_pos.x, self.press_start_pos.y
+                self.press_start_pos_rec.x, self.press_start_pos_rec.y
             )?;
             if let Some(press_time) = self.press_time {
                 write!(f, " {}ms", press_time.elapsed().as_millis())?;
@@ -354,141 +358,6 @@ impl fmt::Display for ButtonRec {
 impl fmt::Debug for ButtonRec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self)
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct MouseRec {
-    pub pos: Vec2,
-    pub prev_pos: Vec2,
-    pub buttons: PerButton<ButtonRec>,
-
-    // Configuration
-    pub double_click_time: Duration,
-    pub drag_threshold: f32,
-}
-
-impl Default for MouseRec {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MouseRec {
-    pub fn new() -> Self {
-        Self {
-            pos: Vec2::NAN,
-            prev_pos: Vec2::NAN,
-            buttons: PerButton::default(),
-            double_click_time: Duration::from_millis(150),
-            drag_threshold: 5.0,
-        }
-    }
-
-    pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
-        self.prev_pos = self.pos;
-        self.pos = Vec2::new(x, y);
-
-        // Update drag states for all pressed buttons
-        for button in [MouseBtn::Left, MouseBtn::Right, MouseBtn::Middle] {
-            let state = &mut self.buttons[button];
-            if state.pressed && !state.dragging {
-                let distance = self.pos.distance(state.press_start_pos);
-                if distance > self.drag_threshold {
-                    state.dragging = true;
-                }
-            }
-        }
-    }
-
-    pub fn poll_released(&mut self, btn: MouseBtn) -> bool {
-        if self.buttons[btn].released {
-            self.buttons[btn].released = false;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn clear_released(&mut self) {
-        self.buttons[MouseBtn::Left].released = false;
-        self.buttons[MouseBtn::Middle].released = false;
-        self.buttons[MouseBtn::Right].released = false;
-    }
-
-    pub fn set_button_press(&mut self, button: MouseBtn, pressed: bool) {
-        let state = &mut self.buttons[button];
-        let was_pressed = state.pressed;
-
-        if pressed && !was_pressed {
-            let now = Instant::now();
-            state.pressed = true;
-            state.press_start_pos = self.pos;
-            state.press_time = Some(now);
-            state.dragging = false;
-
-            // TODO[BUG]: this is probably (definitely) wrong
-            // we need some differentiation between press and click
-            state.double_press = if let Some(last_release) = state.last_release_time {
-                now.duration_since(last_release) <= self.double_click_time
-                    && state.last_press_was_short
-            } else {
-                false
-            };
-        } else if !pressed && was_pressed {
-            let now = Instant::now();
-            state.pressed = false;
-            state.dragging = false;
-            state.released = true;
-
-            if let Some(press_time) = state.press_time {
-                let press_duration = now.duration_since(press_time);
-                state.last_press_was_short = press_duration <= self.double_click_time;
-            } else {
-                state.last_press_was_short = false;
-            }
-
-            state.last_release_time = Some(now);
-            state.press_time = None;
-            state.double_press = false;
-        }
-    }
-
-    pub fn drag_delta(&self) -> Vec2 {
-        self.pos - self.prev_pos
-    }
-
-    pub fn pressed(&self, button: MouseBtn) -> bool {
-        self.buttons[button].pressed
-    }
-
-    pub fn dragging(&self, button: MouseBtn) -> bool {
-        self.buttons[button].dragging
-    }
-
-    pub fn drag_start(&self, button: MouseBtn) -> Vec2 {
-        self.buttons[button].press_start_pos
-    }
-
-    pub fn double_clicked(&self, button: MouseBtn) -> bool {
-        self.buttons[button].double_press
-    }
-}
-
-impl fmt::Display for MouseRec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "MouseState {{")?;
-        writeln!(f, "  pos: ({:.1}, {:.1})", self.pos.x, self.pos.y)?;
-
-        let delta = self.drag_delta();
-        if delta.x != 0.0 || delta.y != 0.0 {
-            writeln!(f, "  dlta: ({:.1}, {:.1})", delta.x, delta.y)?;
-        }
-
-        writeln!(f, "  left: {}", self.buttons[MouseBtn::Left])?;
-        writeln!(f, "  rght: {}", self.buttons[MouseBtn::Right])?;
-        writeln!(f, "  mddl: {}", self.buttons[MouseBtn::Middle])?;
-        write!(f, "}}")
     }
 }
 
@@ -543,5 +412,140 @@ impl From<CursorIcon> for winit::window::Cursor {
             CursorIcon::ResizeNW => WCI::NwResize,
         }
         .into()
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct MouseRec {
+    pub pos: Vec2,
+    pub prev_pos: Vec2,
+    pub buttons: PerButton<ButtonRec>,
+
+    // Configuration
+    pub double_click_time: Duration,
+    pub drag_threshold: f32,
+}
+
+impl Default for MouseRec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MouseRec {
+    pub fn new() -> Self {
+        Self {
+            pos: Vec2::NAN,
+            prev_pos: Vec2::NAN,
+            buttons: PerButton::default(),
+            double_click_time: Duration::from_millis(150),
+            drag_threshold: 5.0,
+        }
+    }
+
+    pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
+        self.prev_pos = self.pos;
+        self.pos = Vec2::new(x, y);
+
+        // Update drag states for all pressed buttons
+        for button in [MouseBtn::Left, MouseBtn::Right, MouseBtn::Middle] {
+            let state = &mut self.buttons[button];
+            if state.pressed && !state.dragging {
+                let distance = self.pos.distance(state.press_start_pos_rec);
+                if distance > self.drag_threshold {
+                    state.dragging = true;
+                }
+            }
+        }
+    }
+
+    pub fn poll_released(&mut self, btn: MouseBtn) -> bool {
+        if self.buttons[btn].released {
+            self.buttons[btn].released = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear_released(&mut self) {
+        self.buttons[MouseBtn::Left].released = false;
+        self.buttons[MouseBtn::Middle].released = false;
+        self.buttons[MouseBtn::Right].released = false;
+    }
+
+    pub fn set_button_press(&mut self, button: MouseBtn, pressed: bool) {
+        let state = &mut self.buttons[button];
+        let was_pressed = state.pressed;
+
+        if pressed && !was_pressed {
+            let now = Instant::now();
+            state.pressed = true;
+            state.press_start_pos_rec = self.pos;
+            state.press_time = Some(now);
+            state.dragging = false;
+
+            // TODO[BUG]: this is probably (definitely) wrong
+            // we need some differentiation between press and click
+            state.double_press = if let Some(last_release) = state.last_release_time {
+                now.duration_since(last_release) <= self.double_click_time
+                    && state.last_press_was_short
+            } else {
+                false
+            };
+        } else if !pressed && was_pressed {
+            let now = Instant::now();
+            state.pressed = false;
+            state.dragging = false;
+            state.released = true;
+
+            if let Some(press_time) = state.press_time {
+                let press_duration = now.duration_since(press_time);
+                state.last_press_was_short = press_duration <= self.double_click_time;
+            } else {
+                state.last_press_was_short = false;
+            }
+
+            state.last_release_time = Some(now);
+            state.press_time = None;
+            state.double_press = false;
+        }
+    }
+
+    pub fn drag_delta(&self) -> Vec2 {
+        self.pos - self.prev_pos
+    }
+
+    pub fn pressed(&self, button: MouseBtn) -> bool {
+        self.buttons[button].pressed
+    }
+
+    pub fn dragging(&self, button: MouseBtn) -> bool {
+        self.buttons[button].dragging
+    }
+
+    pub fn drag_start(&self, button: MouseBtn) -> Vec2 {
+        self.buttons[button].press_start_pos_rec
+    }
+
+    pub fn double_clicked(&self, button: MouseBtn) -> bool {
+        self.buttons[button].double_press
+    }
+}
+
+impl fmt::Display for MouseRec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "MouseState {{")?;
+        writeln!(f, "  pos: ({:.1}, {:.1})", self.pos.x, self.pos.y)?;
+
+        let delta = self.drag_delta();
+        if delta.x != 0.0 || delta.y != 0.0 {
+            writeln!(f, "  dlta: ({:.1}, {:.1})", delta.x, delta.y)?;
+        }
+
+        writeln!(f, "  left: {}", self.buttons[MouseBtn::Left])?;
+        writeln!(f, "  rght: {}", self.buttons[MouseBtn::Right])?;
+        writeln!(f, "  mddl: {}", self.buttons[MouseBtn::Middle])?;
+        write!(f, "}}")
     }
 }
