@@ -52,7 +52,7 @@ pub fn almost_equal(a: f32, b: f32, epsilon: f32) -> bool {
 
 impl Rect {
     /// Infinite rectangle that contains every point.
-    pub const EVERYTHING: Self = Self {
+    pub const INFINITY: Self = Self {
         min: vec2(-f32::INFINITY, -f32::INFINITY),
         max: vec2(f32::INFINITY, f32::INFINITY),
     };
@@ -131,7 +131,7 @@ impl Rect {
     /// A [`Rect`] that contains every point to the right of the given X coordinate.
     #[inline]
     pub fn everything_right_of(left_x: f32) -> Self {
-        let mut rect = Self::EVERYTHING;
+        let mut rect = Self::INFINITY;
         rect.set_left(left_x);
         rect
     }
@@ -139,7 +139,7 @@ impl Rect {
     /// A [`Rect`] that contains every point to the left of the given X coordinate.
     #[inline]
     pub fn everything_left_of(right_x: f32) -> Self {
-        let mut rect = Self::EVERYTHING;
+        let mut rect = Self::INFINITY;
         rect.set_right(right_x);
         rect
     }
@@ -147,7 +147,7 @@ impl Rect {
     /// A [`Rect`] that contains every point below a certain y coordinate
     #[inline]
     pub fn everything_below(top_y: f32) -> Self {
-        let mut rect = Self::EVERYTHING;
+        let mut rect = Self::INFINITY;
         rect.set_top(top_y);
         rect
     }
@@ -155,7 +155,7 @@ impl Rect {
     /// A [`Rect`] that contains every point above a certain y coordinate
     #[inline]
     pub fn everything_above(bottom_y: f32) -> Self {
-        let mut rect = Self::EVERYTHING;
+        let mut rect = Self::INFINITY;
         rect.set_bottom(bottom_y);
         rect
     }

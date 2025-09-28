@@ -32,6 +32,7 @@ pub struct Context {
     pub next: NextPanelData,
 
     // TODO[CHECK]: when do we set the panels and item ids?
+    // TODO[BUG]: if cursor quickly exists window hot_id may not be set to NULL
     /// the id of the element that is currently hovered
     ///
     /// can either be an item or a panel
@@ -262,14 +263,13 @@ impl Context {
         p.flags = flags;
         p.explicit_size = self.next.size;
         // p.bg_color = self.next.bg_color;
-        p.outline = self.next.outline;
-        p.titlebar_height = self.next.titlebar_height;
+        p.titlebar_height = self.style.titlebar_height;
+        p.padding = self.style.panel_padding;
         p.layout = self.next.layout;
         p.last_frame_used = self.frame_count;
         p.move_id = p.gen_id("#MOVE");
         p.min_size = self.next.min_size;
         p.max_size = self.next.max_size;
-        let corner_rad = self.next.corner_radius;
 
         if flags.has(PanelFlags::NO_MOVE) {
             p.move_id = Id::NULL;
@@ -308,23 +308,8 @@ impl Context {
 
         p.size = panel_size.min(p.max_panel_size()).max(p.min_panel_size());
 
-
-        // draw background
-        p.draw(|list| {
-            list.push_clip_rect(p.panel_rect());
-            let mut rect = list
-                .rect(panel_pos, panel_pos + panel_size)
-                .fill(self.style.panel_bg)
-                .radius(corner_rad);
-
-            rect.outline = p.outline.map(|(col, w)| (col, w, OutlinePlacement::Inner));
-            rect.add()
-        });
-
-        let panel_rect = Rect::from_min_size(p.pos, p.size);
-
         let p = &self.panels[id];
-
+        let panel_rect = p.panel_rect();
         if panel_rect.contains(self.mouse.pos) {
             if self.hot_panel_id.is_null()
                 || self.panels[self.hot_panel_id].draw_order < p.draw_order
@@ -336,13 +321,40 @@ impl Context {
             }
         }
 
+        // TODO[NOTE]: include outline width in panel size
+        // draw panel
+        let is_window_panel = p.is_window_panel;
+
+        // draw background
+        let bg_fill = if p.is_window_panel {
+            self.style.window_bg
+        } else {
+            self.style.panel_bg
+        };
+
+        let outline = if p.id == self.prev_hot_panel_id {
+            self.style.panel_hover_outline
+        } else {
+            self.style.panel_outline
+        };
+
+        p.draw(|list| {
+            list.push_clip_rect(p.panel_rect());
+            list
+                .rect(panel_pos, panel_pos + panel_size)
+                .fill(bg_fill)
+                .outline(outline)
+                .radius(self.style.panel_corner).add();
+        });
+
+
+
         // let win_rect = self.window.window_rect();
         // if !win_rect.contains_rect(panel_rect) {
         //     self.requested_windows.push((p.size, self.window.window_pos() + p.pos));
         // }
 
         // let p = &self.panels[id];
-        let is_window_panel = p.is_window_panel;
         if !p.flags.has(PanelFlags::NO_TITLEBAR) {
             // draw titlebar
             p.draw(|list| {
@@ -351,7 +363,7 @@ impl Context {
                     panel_pos + Vec2::new(panel_size.x, p.titlebar_height),
                 )
                 .fill(self.style.titlebar_color)
-                .radii([corner_rad, corner_rad, 0.0, 0.0])
+                .radii([self.style.panel_corner, self.style.panel_corner, 0.0, 0.0])
                 .add()
             });
             // let tb_rect = Rect::from_min_size(p.pos, Vec2::new(panel_size.x, p.titlebar_height));
@@ -374,9 +386,9 @@ impl Context {
                 self.move_cursor(Vec2::new((-10.0 - button_size.x) * 2.0, 0.0));
                 let min_id = self.panels[id].gen_id("min");
                 let sig = self.item_register(min_id, button_size, ItemFlags::MOVE_CURSOR_NO);
-                let mut color = RGBA::WHITE;
+                let mut color = self.style.text_col;
                 if sig.hovering() {
-                    color = RGBA::BLUE;
+                    color = self.style.btn_hover;
                 }
                 if sig.released() {
                     self.window.minimize();
@@ -394,9 +406,9 @@ impl Context {
                 self.move_cursor(Vec2::new(10.0 + button_size.x, 0.0));
                 let max_id = self.panels[id].gen_id("max");
                 let sig = self.item_register(max_id, button_size, ItemFlags::MOVE_CURSOR_NO);
-                let mut color = RGBA::WHITE;
+                let mut color = self.style.text_col;
                 if sig.hovering() {
-                    color = RGBA::BLUE;
+                    color = self.style.btn_hover;
                 }
                 if sig.released() {
                     self.window.toggle_maximize();
@@ -426,7 +438,7 @@ impl Context {
             // self.button("X", RGBA::WHITE);
             let mut color = RGBA::WHITE;
             if sig.hovering() {
-                color = self.style.palette.orange;
+                color = self.style.red;
             }
             if sig.pressed() {
                 self.panels[id].close_pressed = true;
@@ -660,100 +672,40 @@ impl Context {
 
         let p = self.get_current_panel();
         let item_rect = self.last_item_data.unwrap().rect;
-        p.draw(|list| list.add_text(item_rect.min, &shape));
+        p.draw(|list| list.add_text(item_rect.min, &shape, self.style.text_col));
     }
 
-    pub fn font_atlas(&mut self, label: &str, scale: f32) {
-        let p = self.get_current_panel();
-        let id = p.gen_id(label);
-
-        let uv_min = self.glyph_cache.min_alloc_uv;
-        let uv_max = self.glyph_cache.max_alloc_uv;
-        let uv_size = uv_max - uv_min;
-        let size = uv_size * scale;
-
-        let _ = self.item_register(id, size, ItemFlags::NONE);
-        let item_rect = self.item_place(size, ItemFlags::NONE);
-
-        let p = self.get_current_panel();
-        p.draw(|list| {
-            list.rect(item_rect.min, item_rect.max)
-                .texture_uv(uv_min, uv_max, 1)
-                .outline(RGBA::BLACK, 5.0, None)
-                .add();
-        });
-    }
 
     pub fn checkbox(&mut self, label: &str, b: &mut bool) -> bool {
-        let active = self.style.btn_pressed;
+        let active = self.style.btn_press;
         let hover = self.style.btn_hover;
         let default = self.style.btn_default;
-        let margin = self.style.btn_margin;
-        let btn_size = self.style.btn_size;
 
-        let size = btn_size + 2.0 * Vec2::splat(margin);
+        let total_h = self.style.line_height;
+        let text_shape = self.shape_text(label, self.style.text_size);
+        let text_dim = text_shape.size();
+
+        let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
+        let padding = vert_pad; // horizontal padding
+        // let spacing = self.style.spacing; // space between box and text
+        let spacing = padding;
+
+        let box_size = total_h; // box height == line height
+
+        let size_x = padding + box_size + spacing + text_dim.x + padding;
+        let size = Vec2::new(size_x, total_h);
 
         let p = self.get_current_panel();
         let id = p.gen_id(label);
 
         let sig = self.item_register(id, size, ItemFlags::NONE);
-        let rect = self.item_place(size, ItemFlags::NONE);
+        let item_rect = self.item_place(size, ItemFlags::NONE);
 
         if sig.released() {
             *b = !*b;
         }
 
-        let col;
-        if sig.pressed() {
-            col = active;
-        } else if sig.hovering() {
-            col = hover;
-        } else {
-            col = default;
-        }
-
-        let p = self.get_current_panel();
-        p.draw(|list| {
-            list.rect(rect.min, rect.max).fill(col).add();
-            if *b {
-                list.rect(rect.min + margin, rect.max - margin)
-                    .fill(active)
-                    .add();
-            }
-        });
-
-        *b
-    }
-
-    pub fn button(&mut self, label: &str) -> bool {
-        let active = self.style.btn_pressed;
-        let hover = self.style.btn_hover;
-        let default = self.style.btn_default;
-        let text_size = self.style.text_size;
-        let btn_height = self.style.btn_size; // total button height (y)
-
-        let shape = self.shape_text(label, text_size);
-        let text_dim = shape.size(); // text width and height
-
-        // vertical margin (if text is taller than btn_height, clamp to 0)
-        let vert_margin = ((btn_height - text_dim.y) / 2.0).max(0.0);
-        // use same margin horizontally so width = text width + 2*margin
-        let horiz_margin = vert_margin;
-
-        let size = Vec2::new(text_dim.x + horiz_margin * 2.0, btn_height);
-
-        let p = self.get_current_panel();
-        let id = p.gen_id(label);
-
-        let sig = self.item_register(id, size, ItemFlags::NONE);
-        let item_rect = self.item_place(size, ItemFlags::NONE);
-
-        let mut start_drag_outside = false;
-        if let Some(pos) = self.mouse.drag_start(MouseBtn::Left) {
-            start_drag_outside = !item_rect.contains(pos);
-        }
-
-        let col = if sig.pressed() && !start_drag_outside {
+        let col = if sig.pressed() {
             active
         } else if sig.hovering() {
             hover
@@ -761,31 +713,44 @@ impl Context {
             default
         };
 
-        // let text_pos = Vec2::new(
-        //     item_rect.min.x + (size.x - text_dim.x) * 0.5,
-        //     item_rect.min.y + (size.y - text_dim.y) * 0.5,
-        // );
-        let text_pos = item_rect.min + Vec2::new(horiz_margin, vert_margin);
+        let box_min = Vec2::new(item_rect.min.x + padding, item_rect.min.y);
+        let box_max = Vec2::new(box_min.x + box_size, item_rect.max.y);
+
+        let text_pos = item_rect.min + Vec2::new(padding + box_size + spacing, (size.y - text_dim.y) * 0.5);
 
         let p = self.get_current_panel();
         p.draw(|list| {
-            list.rect(item_rect.min, item_rect.max).radius(self.style.btn_corner).fill(col).add();
-            list.add_text(text_pos, &shape);
+            list.rect(item_rect.min, item_rect.max).fill(self.style.panel_bg).add();
+            list.rect(box_min, box_max).fill(col).radius(self.style.btn_corner).add();
+            if *b {
+                let inner_inset = (box_size * 0.15);
+                list.rect(
+                    box_min + Vec2::new(inner_inset, inner_inset),
+                    box_max - Vec2::new(inner_inset, inner_inset),
+                )
+                    .radius(self.style.btn_corner)
+                    .fill(active)
+                    .add();
+            }
+            list.add_text(text_pos, &text_shape, self.style.text_col);
         });
 
-        sig.released() && !start_drag_outside
+        *b
     }
+    
 
-    pub fn button2(&mut self, label: &str) -> bool {
-        let active = self.style.btn_pressed;
+    pub fn button(&mut self, label: &str) -> bool {
+        let active = self.style.btn_press;
         let hover = self.style.btn_hover;
         let default = self.style.btn_default;
-        let margin = self.style.btn_margin;
-        let text_size = self.style.text_size;
 
-        // TODO[NOTE]: delegate to style
-        let shape = self.shape_text(label, text_size);
-        let size = Vec2::splat(self.style.btn_size);
+        let total_h = self.style.line_height;
+        let text_shape = self.shape_text(label, self.style.text_size);
+        let text_dim = text_shape.size();
+
+        let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
+        let horiz_pad = vert_pad; // uniform padding
+        let size = Vec2::new(text_dim.x + horiz_pad * 2.0, total_h);
 
         let p = self.get_current_panel();
         let id = p.gen_id(label);
@@ -798,24 +763,28 @@ impl Context {
             start_drag_outside = !item_rect.contains(pos);
         }
 
-        let col;
-        if sig.pressed() && !start_drag_outside {
-            col = active
+        let (btn_col, text_col) = if sig.pressed() && !start_drag_outside {
+            (active, self.style.btn_press_text)
         } else if sig.hovering() {
-            col = hover
+            (hover, self.style.text_col)
         } else {
-            col = default
-        }
+            (default, self.style.text_col)
+        };
+
+        let text_pos = item_rect.min + Vec2::new((size.x - text_dim.x) * 0.5, (size.y - text_dim.y) * 0.5);
 
         let p = self.get_current_panel();
-        // let item_rect = self.last_item_data.unwrap().rect;
         p.draw(|list| {
-            list.rect(item_rect.min, item_rect.max).fill(col).add();
-            list.add_text(item_rect.min + margin, &shape);
+            list.rect(item_rect.min, item_rect.max)
+                .radius(self.style.btn_corner)
+                .fill(btn_col)
+                .add();
+            list.add_text(text_pos, &text_shape, text_col);
         });
 
         sig.released() && !start_drag_outside
     }
+
 
     pub fn get_active_panel(&self) -> Option<&Panel> {
         if self.active_panel_id.is_null() {
@@ -867,10 +836,10 @@ impl Context {
         if self.last_item_data.is_some() && !flags.has(ItemFlags::MOVE_CURSOR_NO) {
             match p.layout {
                 Layout::Vertical => {
-                    p.cursor.borrow_mut().pos.y += p.spacing;
+                    p.cursor.borrow_mut().pos.y += self.style.spacing;
                 }
                 Layout::Horizontal => {
-                    p.cursor.borrow_mut().pos.x += p.spacing;
+                    p.cursor.borrow_mut().pos.x += self.style.spacing;
                 }
             }
         }
@@ -1016,7 +985,6 @@ impl Context {
         self.next.pos = Some(Vec2::ZERO);
         let win_size = self.window.window_size();
         self.next.size = Some(win_size);
-        self.next.corner_radius = 0.0;
         // TODO
         // self.window
 
@@ -1043,7 +1011,6 @@ impl Context {
     }
 
     pub fn debug_window(&mut self) {
-        self.next.outline = Some((RGBA::DARK_BLUE, 5.0));
         self.begin("#DEBUG");
         let hot_name = self.get_panel_name_with_id(self.prev_hot_panel_id);
         let active_name = self.get_panel_name_with_id(self.prev_active_panel_id);
@@ -1140,6 +1107,7 @@ impl Context {
     pub fn build_draw_data(&mut self) {
         let panels = &self.panels;
         let draw_buff = &mut self.draw.call_list;
+        draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
 
         for &id in &self.draw_order {
             let name = self.panels[id].name.clone();
@@ -1148,7 +1116,7 @@ impl Context {
             for cmd in &draw_list.cmd_buffer {
                 let vtx = &draw_list.vtx_buffer[cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count];
                 let idx = &draw_list.idx_buffer[cmd.idx_offset..cmd.idx_offset + cmd.idx_count];
-                draw_buff.set_clip_rect(cmd.clip_rect);
+                // draw_buff.set_clip_rect(cmd.clip_rect);
                 draw_buff.push(vtx, idx);
             }
         }
@@ -1159,6 +1127,7 @@ impl Context {
     pub fn build_dbg_draw_data(&mut self) {
         let panels = &self.panels;
         let draw_buff = &mut self.draw.call_list;
+        draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
 
         for &id in &self.draw_order {
             let draw_list = self.panels[id].draw_list_ref();
@@ -1178,7 +1147,7 @@ impl Context {
                         v.col = cols[i % cols.len()];
                     });
 
-                    draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
+                    // draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
                     draw_buff.push(&vtx, &idx);
                 }
             }
@@ -1197,9 +1166,7 @@ pub struct Panel {
 
     pub root: Id,
 
-    pub outline: Option<(RGBA, f32)>,
     pub padding: f32,
-    pub spacing: f32,
 
     /// pos of the panel at draw time
     ///
@@ -1266,8 +1233,8 @@ impl Panel {
             id: Id::from_str(name),
             root: Id::NULL,
             flags: PanelFlags::NONE,
-            padding: 20.0,
-            spacing: 10.0,
+            padding: 0.0,
+            // spacing: 10.0,
             pos: Vec2::splat(30.0),
 
             full_content_size: Vec2::ZERO,
@@ -1275,7 +1242,6 @@ impl Panel {
             explicit_size: None,
             draw_order: 0,
             // bg_color: RGBA::ZERO,
-            outline: None,
             titlebar_height: 0.0,
             move_id: Id::NULL,
             close_id: Id::NULL,
@@ -1443,24 +1409,24 @@ pub enum StyleVar {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ColorPalette {
-    pub red: RGBA,
-    pub orange: RGBA,
-    pub grey: RGBA,
-    // TODO[NOTE]: use ligthen_color method?
-    pub light_grey: RGBA,
-    pub dark_grey: RGBA,
+pub struct Outline {
+    pub width: f32,
+    pub place: OutlinePlacement,
+    pub col: RGBA,
 }
 
-impl ColorPalette {
-    pub fn dark() -> Self {
-        Self {
-            red: RGBA::hex("#B4616A"),
-            orange: RGBA::hex("#e65858"),
-            grey: RGBA::hex("#545454"),
-            light_grey: RGBA::hex("#797979"),
-            dark_grey: RGBA::hex("#2E3440"),
-        }
+impl Outline {
+    pub fn new(col: RGBA, width: f32) -> Self {
+        Self { width, col, place: OutlinePlacement::default() }
+    }
+
+    pub fn none() -> Self {
+        Self::new(RGBA::ZERO, 0.0)
+    }
+
+    pub fn with_place(mut self, place: OutlinePlacement) -> Self {
+        self.place = place;
+        self
     }
 }
 
@@ -1468,41 +1434,67 @@ impl ColorPalette {
 pub struct Style {
     pub titlebar_color: RGBA,
     pub titlebar_height: f32,
+
     pub line_height: f32,
     pub text_size: f32,
+    pub text_col: RGBA,
 
-    pub btn_margin: f32,
-    pub btn_size: f32,
+    // pub btn_margin: f32,
+    // pub btn_size: f32,
     pub btn_corner: f32,
 
     pub btn_default: RGBA,
     pub btn_hover: RGBA,
-    pub btn_pressed: RGBA,
+    pub btn_press: RGBA,
+    pub btn_press_text: RGBA,
+
+    pub window_bg: RGBA,
 
     pub panel_bg: RGBA,
+    pub panel_corner: f32,
+    pub panel_outline: Outline,
+    pub panel_hover_outline: Outline,
+    pub panel_padding: f32,
 
-    pub palette: ColorPalette,
+    pub spacing: f32,
+
+    pub red: RGBA,
 }
 
 impl Style {
     pub fn dark() -> Self {
-        let palette = ColorPalette::dark();
+        let accent = RGBA::hex("#cbdfd4");
+        let btn_default = RGBA::hex("#4f5559");
+        let dark = RGBA::hex("#1d1d1d");
+
+        let btn_hover = RGBA::hex("#576a76");
         Self {
-            titlebar_color: RGBA::hex("#202020"),
-            titlebar_height: 40.0,
+            // titlebar_color: RGBA::hex("#202020"),
+            titlebar_color: dark,
+            titlebar_height: 30.0,
             text_size: 18.0,
-            line_height: 18.0,
-            btn_margin: 8.0,
-            btn_size: 24.0,
+            text_col: RGBA::hex("#EEEBE1"),
+            line_height: 24.0,
+            // btn_margin: 8.0,
+            // btn_size: 24.0,
             btn_corner: 4.0,
 
-            btn_default: palette.grey,
-            btn_hover: palette.light_grey,
-            btn_pressed: palette.orange,
+            btn_default,
+            btn_hover,
+            btn_press: accent,
+            btn_press_text: btn_default,
 
-            panel_bg: palette.dark_grey,
+            window_bg: RGBA::hex("#5c6b6f"),
+            panel_bg: RGBA::hex("#394146"),
+            panel_corner: 5.0,
+            // panel_corner: 0.0,
+            panel_outline: Outline::new(dark, 1.5).with_place(OutlinePlacement::Outer),
+            panel_hover_outline: Outline::new(btn_hover, 1.5).with_place(OutlinePlacement::Outer),
+            // panel_outline: Outline::none(),
+            panel_padding: 10.0,
+            spacing: 12.0,
 
-            palette,
+            red: RGBA::hex("#e65858"),
         }
     }
 }
@@ -1512,14 +1504,10 @@ pub struct NextPanelData {
     pub pos: Option<Vec2>,
     pub placement: Placement,
     pub layout: Layout,
-    pub titlebar_height: f32,
     pub size: Option<Vec2>,
     pub min_size: Vec2,
     pub max_size: Vec2,
     pub content_size: Option<Vec2>,
-    pub outline: Option<(RGBA, f32)>,
-    // TODO[NOTE]: delegate to style
-    pub corner_radius: f32,
 }
 
 impl Default for NextPanelData {
@@ -1535,13 +1523,10 @@ impl NextPanelData {
             placement: Placement::TopLeft,
             layout: Layout::Vertical,
             size: None,
-            titlebar_height: 40.0,
             // set both to infinity as default
             min_size: Vec2::ZERO,
             max_size: Vec2::INFINITY,
             content_size: None,
-            outline: None,
-            corner_radius: 10.0,
         }
     }
 
@@ -1848,6 +1833,10 @@ impl DrawList {
         self.cmd_buffer.last_mut().unwrap()
     }
 
+    pub fn curr_clip_rect(&self) -> Rect {
+        self.clip_stack.last().copied().unwrap_or(Rect::INFINITY)
+    }
+
     pub fn push_draw_cmd(&mut self) -> &mut DrawCmd {
         self.cmd_buffer.push(DrawCmd::default());
         let cmd = self.cmd_buffer.last_mut().unwrap();
@@ -1874,6 +1863,8 @@ impl DrawList {
         }
     }
 
+
+
     #[inline]
     pub fn push_vtx_idx(&mut self, vtx: &[Vertex], idx: &[u32]) {
         let cmd = self.curr_draw_cmd();
@@ -1892,211 +1883,382 @@ impl DrawList {
             draw_list: self,
             min,
             max,
-            uv_min: None,
-            uv_max: None,
+            uv_min: Vec2::ZERO,
+            uv_max: Vec2::ONE,
             texture_id: 0,
-            fill: None,
-            outline: None,
+            fill: RGBA::ZERO,
+            outline: Outline::none(),
             corner_radii: [0.0; 4],
         }
     }
 
-    pub fn add_text(&mut self, pos: Vec2, text: &ShapedText) {
+    pub fn add_text(&mut self, pos: Vec2, text: &ShapedText, col: RGBA) {
         for g in text.glyphs.iter() {
             let min = g.meta.pos + pos;
             let max = min + g.meta.size;
             let uv_min = g.meta.uv_min;
             let uv_max = g.meta.uv_max;
 
-            self.rect(min, max).texture_uv(uv_min, uv_max, 1).add()
+            self.rect(min, max).texture_uv(uv_min, uv_max, 1).fill(col).add()
         }
     }
 
-    pub fn add_rect_full(
+    #[inline]
+    pub fn push_clipped_vtx_idx(&mut self, vtx: &[Vertex], idx: &[u32]) {
+        let cmd = self.curr_draw_cmd();
+        let base = cmd.vtx_count as u32;
+        let clip = self.curr_clip_rect();
+
+        let mut kept: Vec<u32> = Vec::with_capacity(idx.len());
+        for tri in idx.chunks_exact(3) {
+            let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+            let (v0, v1, v2) = (vtx[i0], vtx[i1], vtx[i2]);
+
+            if (v0.pos.x < clip.min.x && v1.pos.x < clip.min.x && v2.pos.x < clip.min.x)
+                || (v0.pos.x > clip.max.x && v1.pos.x > clip.max.x && v2.pos.x > clip.max.x)
+                    || (v0.pos.y < clip.min.y && v1.pos.y < clip.min.y && v2.pos.y < clip.min.y)
+                    || (v0.pos.y > clip.max.y && v1.pos.y > clip.max.y && v2.pos.y > clip.max.y)
+            {
+                continue;
+            }
+
+            kept.push(base + tri[0]);
+            kept.push(base + tri[1]);
+            kept.push(base + tri[2]);
+        }
+
+        self.vtx_buffer.extend_from_slice(vtx);
+        if !kept.is_empty() {
+            self.idx_buffer.extend_from_slice(&kept);
+        }
+
+        let cmd = self.curr_draw_cmd();
+        cmd.vtx_count += vtx.len();
+        cmd.idx_count += kept.len();
+    }
+
+    pub fn add_rect_rounded(
         &mut self,
         mut min: Vec2,
         mut max: Vec2,
-        uv_min: Option<Vec2>,
-        uv_max: Option<Vec2>,
-        tex_id: u32,
-        fill: Option<RGBA>,
-        outline: Option<(RGBA, f32, OutlinePlacement)>,
-        round: &[f32],
-    ) {
-        let uv_a = uv_min.unwrap_or(Vec2::ZERO);
-        let uv_b = uv_max.unwrap_or(Vec2::new(1.0, 1.0));
-
-        if tex_id != 0 {
-            self.push_texture(tex_id);
-        }
-
-        if round.is_empty() {
-            if let Some(fill_col) = fill {
-                if tex_id == 0 {
-                    let vtx = [
-                        Vertex::new(min.with_y(max.y), fill_col, Vec2::ZERO, 0),
-                        Vertex::new(max, fill_col, Vec2::ZERO, 0),
-                        Vertex::new(min.with_x(max.x), fill_col, Vec2::ZERO, 0),
-                        Vertex::new(min, fill_col, Vec2::ZERO, 0),
-                    ];
-                    let idx = [0u32, 1, 2, 0, 2, 3];
-                    self.push_vtx_idx(&vtx, &idx);
-                } else {
-                    let tint = fill_col;
-                    let vtx = [
-                        Vertex::new(min.with_y(max.y), tint, uv_a.with_y(uv_b.y), tex_id),
-                        Vertex::new(max, tint, uv_b, tex_id),
-                        Vertex::new(min.with_x(max.x), tint, uv_a.with_x(uv_b.x), tex_id),
-                        Vertex::new(min, tint, uv_a, tex_id),
-                    ];
-                    let idx = [0u32, 1, 2, 0, 2, 3];
-                    self.push_vtx_idx(&vtx, &idx);
-                }
-            } else if tex_id != 0 {
-                // texture present but no explicit fill: draw textured quad with white tint
-                let white = RGBA::WHITE;
-                let vtx = [
-                    Vertex::new(min.with_y(max.y), white, uv_a.with_y(uv_b.y), tex_id),
-                    Vertex::new(max, white, uv_b, tex_id),
-                    Vertex::new(min.with_x(max.x), white, uv_a.with_x(uv_b.x), tex_id),
-                    Vertex::new(min, white, uv_a, tex_id),
-                ];
-                let idx = [0u32, 1, 2, 0, 2, 3];
-                self.push_vtx_idx(&vtx, &idx);
-            }
-
-            if let Some((col, width, placement)) = outline {
-                let offset = match placement {
-                    OutlinePlacement::Center => 0.0,
-                    OutlinePlacement::Inner => -width * 0.5,
-                    OutlinePlacement::Outer => width * 0.5,
-                };
-                let mut o_min = min - Vec2::splat(offset);
-                let mut o_max = max + Vec2::splat(offset);
-                let pts = [o_min.with_y(o_max.y), o_max, o_max.with_x(o_min.x), o_min];
-                let (vtx, idx) = tessellate_line(&pts, col, width, true);
-                self.push_vtx_idx(&vtx, &idx);
-            }
-
-            return;
-        }
-
-        // rounded case
-        self.path_clear();
-
-        if let Some((_, width, placement)) = outline {
-            let offset = match placement {
-                OutlinePlacement::Center => 0.0,
-                OutlinePlacement::Inner => -width * 0.5,
-                OutlinePlacement::Outer => width * 0.5,
-            };
-            min -= Vec2::splat(offset);
-            max += Vec2::splat(offset);
-        }
-
-        self.path_rect(min, max, round);
-
-        if tex_id == 0 {
-            if let Some(fill_col) = fill {
-                let (vtx, idx) = tessellate_convex_fill(&self.path, fill_col, true);
-                self.push_vtx_idx(&vtx, &idx);
-            }
-        } else {
-            let tint = fill.unwrap_or(RGBA::WHITE);
-            let start = self.vtx_buffer.len();
-            let (vtx, idx) = tessellate_convex_fill(&self.path, tint, true);
-            self.push_vtx_idx(&vtx, &idx);
-            let end = start + vtx.len();
-            self.dist_lin_uv(start, end, min, max, uv_a, uv_b, true, tex_id);
-        }
-
-        if let Some((col, width, _)) = outline {
-            let (vtx, idx) = tessellate_line(&self.path, col, width, true);
-            self.push_vtx_idx(&vtx, &idx);
-        }
-
-        self.path_clear();
-    }
-
-    pub fn add_rect_uv(&mut self, min: Vec2, max: Vec2, uv_min: Vec2, uv_max: Vec2, tex_id: u32) {
-        self.add_rect_impl(min, max, RGBA::WHITE, uv_min, uv_max, tex_id);
-    }
-
-    pub fn add_rect_impl(
-        &mut self,
-        min: Vec2,
-        max: Vec2,
-        color: RGBA,
         uv_min: Vec2,
         uv_max: Vec2,
         tex_id: u32,
-    ) {
-        self.push_texture(tex_id);
-
-        let vtx = [
-            Vertex::new(min.with_y(max.y), color, uv_min.with_y(uv_max.y), tex_id),
-            Vertex::new(max, color, uv_max, tex_id),
-            Vertex::new(min.with_x(max.x), color, uv_min.with_x(uv_max.x), tex_id),
-            Vertex::new(min, color, uv_min, tex_id),
-        ];
-
-        let idx = [0, 1, 2, 0, 2, 3];
-
-        self.push_vtx_idx(&vtx, &idx);
-    }
-
-    pub fn add_rect(
-        &mut self,
-        mut min: Vec2,
-        mut max: Vec2,
-        fill: Option<RGBA>,
-        outline: Option<(RGBA, f32, OutlinePlacement)>,
+        tint: RGBA,
+        outline: Outline,
         round: &[f32],
     ) {
         if round.is_empty() {
-            if let Some(fill) = fill {
-                self.add_rect_impl(min, max, fill, Vec2::ZERO, Vec2::ZERO, 0);
-            }
-            if let Some((col, width, placement)) = outline {
-                let offset = match placement {
-                    OutlinePlacement::Center => 0.0,
-                    OutlinePlacement::Inner => -width * 0.5,
-                    OutlinePlacement::Outer => width * 0.5,
-                };
+            return self.add_rect(min, max, uv_min, uv_max, tex_id, tint, outline);
+        }
 
-                min -= Vec2::splat(offset);
-                max += Vec2::splat(offset);
-
-                let pts = [min.with_y(max.y), max, max.with_x(min.x), min];
-                let (vtx, idx) = tessellate_line(&pts, col, width, true);
-                self.push_vtx_idx(&vtx, &idx);
-            }
+        // rounded case (unchanged)
+        let clip = self.curr_clip_rect();
+        if !(clip.contains(min) || clip.contains(max)) {
             return;
         }
 
-        self.path_clear();
-        if let Some((_, width, placement)) = outline {
-            let offset = match placement {
+        self.push_texture(tex_id);
+
+        // account for outline placement as original did
+        if outline.width != 0.0 {
+            let offset = match outline.place {
                 OutlinePlacement::Center => 0.0,
-                OutlinePlacement::Inner => -width * 0.5,
-                OutlinePlacement::Outer => width * 0.5,
+                OutlinePlacement::Inner => -outline.width * 0.5,
+                OutlinePlacement::Outer => outline.width * 0.5,
             };
             min -= Vec2::splat(offset);
             max += Vec2::splat(offset);
         }
+
+        self.path_clear();
         self.path_rect(min, max, round);
 
-        if let Some(fill) = fill {
-            let (vtx, idx) = tessellate_convex_fill(&self.path, fill, true);
-            self.push_vtx_idx(&vtx, &idx);
+        let start = self.vtx_buffer.len();
+        let (vtx, idx) = tessellate_convex_fill(&self.path, tint, true);
+        self.push_clipped_vtx_idx(&vtx, &idx);
+        let end = start + vtx.len();
+        if tex_id != 0 {
+            self.distribute_uvs(start, end, min, max, uv_min, uv_max, true, tex_id);
         }
 
-        if let Some((col, width, _)) = outline {
-            let (vtx, idx) = tessellate_line(&self.path, col, width, true);
-            self.push_vtx_idx(&vtx, &idx);
+        if outline.width != 0.0 {
+            let (vtx_o, idx_o) = tessellate_line(&self.path, outline.col, outline.width, true);
+            self.push_clipped_vtx_idx(&vtx_o, &idx_o);
         }
+
         self.path_clear();
     }
+
+    // pub fn add_rect(
+    //     &mut self,
+    //     min: Vec2,
+    //     max: Vec2,
+    //     uv_min: Vec2,
+    //     uv_max: Vec2,
+    //     tex_id: u32,
+    //     tint: RGBA,
+    //     outline: Outline,
+    // ) {
+    //     const QUAD_IDX: [u32; 6] = [0, 1, 2, 0, 2, 3];
+
+    //     // clip to curr clip rect
+    //     let clip = self.curr_clip_rect();
+    //     // assume clip has .min and .max Vec2 fields
+    //     let clip_min = clip.min;
+    //     let clip_max = clip.max;
+
+    //     // compute intersection
+    //     let cmin = Vec2::new(min.x.max(clip_min.x), min.y.max(clip_min.y));
+    //     let cmax = Vec2::new(max.x.min(clip_max.x), max.y.min(clip_max.y));
+
+    //     if cmin.x >= cmax.x || cmin.y >= cmax.y {
+    //         return;
+    //     }
+
+    //     // fast-path: solid fill (opaque) and no texture -> draw outer rect under fill for outline
+    //     let is_opaque = tint.a == 1.0; // assumes RGBA has .a
+    //     if tex_id == 0 && is_opaque && outline.width != 0.0 {
+    //         // draw outer quad (outline color) under the clipped fill quad
+    //         let outset = outline.width * 0.5;
+    //         let o_min = Vec2::new(min.x - outset, min.y - outset);
+    //         let o_max = Vec2::new(max.x + outset, max.y + outset);
+
+    //         // clip outer rect as well
+    //         let ocmin = Vec2::new(o_min.x.max(clip_min.x), o_min.y.max(clip_min.y));
+    //         let ocmax = Vec2::new(o_max.x.min(clip_max.x), o_max.y.min(clip_max.y));
+    //         if !(ocmin.x >= ocmax.x || ocmin.y >= ocmax.y) {
+    //             // compute outer UVs by mapping proportionally to original UV rect
+    //             let orig_size = Vec2::new(max.x - min.x, max.y - min.y);
+    //             let uv_size = Vec2::new(uv_max.x - uv_min.x, uv_max.y - uv_min.y);
+    //             let outer_uv_min = if orig_size.x != 0.0 && orig_size.y != 0.0 {
+    //                 let off = ocmin - o_min;
+    //                 uv_min + Vec2::new(off.x / (o_max.x - o_min.x) * uv_size.x, off.y / (o_max.y - o_min.y) * uv_size.y)
+    //             } else { uv_min };
+    //             let outer_uv_max = if orig_size.x != 0.0 && orig_size.y != 0.0 {
+    //                 let off = ocmax - o_min;
+    //                 uv_min + Vec2::new(off.x / (o_max.x - o_min.x) * uv_size.x, off.y / (o_max.y - o_min.y) * uv_size.y)
+    //             } else { uv_max };
+
+    //             let vtx_o = [
+    //                 Vertex::new(Vec2::new(ocmin.x, ocmax.y), outline.col, Vec2::new(outer_uv_min.x, outer_uv_max.y), 0),
+    //                 Vertex::new(ocmax, outline.col, outer_uv_max, 0),
+    //                 Vertex::new(Vec2::new(ocmax.x, ocmin.y), outline.col, Vec2::new(outer_uv_max.x, outer_uv_min.y), 0),
+    //                 Vertex::new(ocmin, outline.col, outer_uv_min, 0),
+    //             ];
+    //             self.push_vtx_idx(&vtx_o, &QUAD_IDX);
+    //         }
+
+    //         // now draw clipped fill quad (on top)
+    //         let start = self.vtx_buffer.len();
+    //         // compute UVs for clipped fill
+    //         let orig_size = Vec2::new(max.x - min.x, max.y - min.y);
+    //         let clipped_offset = cmin - min;
+    //         let clipped_size = cmax - cmin;
+    //         let mut uv_cmin = uv_min;
+    //         let mut uv_cmax = uv_max;
+    //         if orig_size.x != 0.0 {
+    //             let sx = clipped_offset.x / orig_size.x;
+    //             let ex = (clipped_offset.x + clipped_size.x) / orig_size.x;
+    //             let u0 = uv_min.x + sx * (uv_max.x - uv_min.x);
+    //             let u1 = uv_min.x + ex * (uv_max.x - uv_min.x);
+    //             uv_cmin.x = u0;
+    //             uv_cmax.x = u1;
+    //         }
+    //         if orig_size.y != 0.0 {
+    //             let sy = clipped_offset.y / orig_size.y;
+    //             let ey = (clipped_offset.y + clipped_size.y) / orig_size.y;
+    //             let v0 = uv_min.y + sy * (uv_max.y - uv_min.y);
+    //             let v1 = uv_min.y + ey * (uv_max.y - uv_min.y);
+    //             uv_cmin.y = v0;
+    //             uv_cmax.y = v1;
+    //         }
+
+    //         let vtx = [
+    //             Vertex::new(Vec2::new(cmin.x, cmax.y), tint, Vec2::new(uv_cmin.x, uv_cmax.y), 0),
+    //             Vertex::new(cmax, tint, uv_cmax, 0),
+    //             Vertex::new(Vec2::new(cmax.x, cmin.y), tint, Vec2::new(uv_cmax.x, uv_cmin.y), 0),
+    //             Vertex::new(cmin, tint, uv_cmin, 0),
+    //         ];
+    //         self.push_vtx_idx(&vtx, &QUAD_IDX);
+    //         return;
+    //     }
+
+    //     // generic (textured or non-opaque fill or no-outline)
+    //     if tex_id != 0 {
+    //         self.push_texture(tex_id);
+    //     }
+
+    //     // compute UVs for clipped rectangle
+    //     let orig_size = Vec2::new(max.x - min.x, max.y - min.y);
+    //     let clipped_offset = cmin - min;
+    //     let clipped_size = cmax - cmin;
+
+    //     let mut uv_cmin = uv_min;
+    //     let mut uv_cmax = uv_max;
+    //     if orig_size.x != 0.0 {
+    //         let sx = clipped_offset.x / orig_size.x;
+    //         let ex = (clipped_offset.x + clipped_size.x) / orig_size.x;
+    //         uv_cmin.x = uv_min.x + sx * (uv_max.x - uv_min.x);
+    //         uv_cmax.x = uv_min.x + ex * (uv_max.x - uv_min.x);
+    //     }
+    //     if orig_size.y != 0.0 {
+    //         let sy = clipped_offset.y / orig_size.y;
+    //         let ey = (clipped_offset.y + clipped_size.y) / orig_size.y;
+    //         uv_cmin.y = uv_min.y + sy * (uv_max.y - uv_min.y);
+    //         uv_cmax.y = uv_min.y + ey * (uv_max.y - uv_min.y);
+    //     }
+
+    //     let start = self.vtx_buffer.len();
+    //     let vtx = [
+    //         Vertex::new(Vec2::new(cmin.x, cmax.y), tint, Vec2::new(uv_cmin.x, uv_cmax.y), tex_id),
+    //         Vertex::new(cmax, tint, uv_cmax, tex_id),
+    //         Vertex::new(Vec2::new(cmax.x, cmin.y), tint, Vec2::new(uv_cmax.x, uv_cmin.y), tex_id),
+    //         Vertex::new(cmin, tint, uv_cmin, tex_id),
+    //     ];
+    //     self.push_vtx_idx(&vtx, &QUAD_IDX);
+    //     let end = start + vtx.len();
+    //     if tex_id != 0 {
+    //         self.dist_lin_uv(start, end, cmin, cmax, uv_cmin, uv_cmax, true, tex_id);
+    //     }
+
+    //     // fallback outline: stroke the rectangle path if needed
+    //     if outline.width != 0.0 {
+    //         let o_min = cmin;
+    //         let o_max = cmax;
+    //         let pts = [o_min.with_y(o_max.y), o_max, o_max.with_x(o_min.x), o_min];
+    //         let (vtx_o, idx_o) = tessellate_line(&pts, outline.col, outline.width, true);
+    //         self.push_vtx_idx(&vtx_o, &idx_o);
+    //     }
+    // }
+
+    
+    fn push_rect_vertices(
+        &mut self,
+        min: Vec2,
+        max: Vec2,
+        uv_min: Vec2,
+        uv_max: Vec2,
+        color: RGBA,
+        tex_id: u32,
+    ) {
+        const QUAD_IDX: [u32; 6] = [0, 1, 2, 0, 2, 3];
+
+        let vertices = [
+            Vertex::new(Vec2::new(min.x, max.y), color, Vec2::new(uv_min.x, uv_max.y), tex_id),
+            Vertex::new(max, color, uv_max, tex_id),
+            Vertex::new(Vec2::new(max.x, min.y), color, Vec2::new(uv_max.x, uv_min.y), tex_id),
+            Vertex::new(min, color, uv_min, tex_id),
+        ];
+
+        self.push_vtx_idx(&vertices, &QUAD_IDX);
+    }
+
+//     pub fn add_rect(
+//         &mut self,
+//         mut min: Vec2,
+//         mut max: Vec2,
+//         uv_min: Vec2,
+//         uv_max: Vec2,
+//         tex_id: u32,
+//         tint: RGBA,
+//         outline: Outline,
+//     ) {
+//         let clip = self.curr_clip_rect();
+//         if !(clip.contains(min) || clip.contains(max)) {
+//             return;
+//         }
+
+//         // if opaque draw outline with single rect
+//         let opaque_fill = tint.a == 1.0 && tex_id == 0;
+
+//         let cmin = min.max(clip.min);
+//         let cmax = min.min(clip.max);
+//     }
+
+//     pub fn add_rect_full(
+//         &mut self,
+//         mut min: Vec2,
+//         mut max: Vec2,
+//         uv_min: Vec2,
+//         uv_max: Vec2,
+//         tex_id: u32,
+//         tint: RGBA,
+//         outline: Outline,
+//         round: &[f32],
+//     ) {
+//         let clip = self.curr_clip_rect();
+//         if !(clip.contains(min) || clip.contains(max)) {
+//             return;
+//         }
+
+//         if tex_id != 0 {
+//             self.push_texture(tex_id);
+//         }
+
+//         const QUAD_IDX: [u32; 6] = [0, 1, 2, 0, 2, 3];
+
+//         if round.is_empty() {
+//             let start = self.vtx_buffer.len();
+//             let vtx = [
+//                 Vertex::new(min.with_y(max.y), tint, uv_min.with_y(uv_max.y), tex_id),
+//                 Vertex::new(max, tint, uv_max, tex_id),
+//                 Vertex::new(min.with_x(max.x), tint, uv_min.with_x(uv_max.x), tex_id),
+//                 Vertex::new(min, tint, uv_min, tex_id),
+//             ];
+//             self.push_vtx_idx(&vtx, &QUAD_IDX);
+//             let end = start + vtx.len();
+//             if tex_id != 0 {
+//                 self.dist_lin_uv(start, end, min, max, uv_min, uv_max, true, tex_id);
+//             }
+
+//             if outline.width != 0.0 {
+//                 let offset = match outline.place {
+//                     OutlinePlacement::Center => 0.0,
+//                     OutlinePlacement::Inner => -outline.width * 0.5,
+//                     OutlinePlacement::Outer => outline.width * 0.5,
+//                 };
+//                 let o_min = min - Vec2::splat(offset);
+//                 let o_max = max + Vec2::splat(offset);
+//                 let pts = [o_min.with_y(o_max.y), o_max, o_max.with_x(o_min.x), o_min];
+//                 let (vtx_o, idx_o) = tessellate_line(&pts, outline.col, outline.width, true);
+//                 self.push_vtx_idx(&vtx_o, &idx_o);
+//             }
+
+//             return;
+//         }
+
+//         // rounded case
+//         self.path_clear();
+
+//         if outline.width != 0.0 {
+//             let offset = match outline.place {
+//                 OutlinePlacement::Center => 0.0,
+//                 OutlinePlacement::Inner => -outline.width * 0.5,
+//                 OutlinePlacement::Outer => outline.width * 0.5,
+//             };
+//             min -= Vec2::splat(offset);
+//             max += Vec2::splat(offset);
+//         }
+
+//         self.path_rect(min, max, round);
+
+//         let start = self.vtx_buffer.len();
+//         let (vtx, idx) = tessellate_convex_fill(&self.path, tint, true);
+//         self.push_vtx_idx(&vtx, &idx);
+//         let end = start + vtx.len();
+//         if tex_id != 0 {
+//             self.dist_lin_uv(start, end, min, max, uv_min, uv_max, true, tex_id);
+//         }
+
+//         if outline.width != 0.0 {
+//             let (vtx_o, idx_o) = tessellate_line(&self.path, outline.col, outline.width, true);
+//             self.push_vtx_idx(&vtx_o, &idx_o);
+//         }
+
+//         self.path_clear();
+//     }
+
 
     pub fn path_clear(&mut self) {
         self.path.clear();
@@ -2192,7 +2354,7 @@ impl DrawList {
         }
     }
 
-    pub fn dist_lin_uv(
+    pub fn distribute_uvs(
         &mut self,
         vert_start: usize,
         vert_end: usize,
@@ -2238,6 +2400,191 @@ impl DrawList {
             vert.tex = tex_id;
         }
     }
+
+    pub fn add_rect(
+        &mut self,
+        min: Vec2,
+        max: Vec2,
+        uv_min: Vec2,
+        uv_max: Vec2,
+        tex_id: u32,
+        tint: RGBA,
+        outline: Outline,
+    ) {
+        // Fast path: opaque solid fill with outline (no texture)
+        if tex_id == 0 && tint.a == 1.0 && outline.width > 0.0 {
+            self.add_solid_rect_with_outline(min, max, uv_min, uv_max, tint, outline);
+            return;
+        }
+
+        self.add_simple_rect(min, max, uv_min, uv_max, tex_id, tint);
+
+        if outline.width > 0.0 {
+            let clip = self.curr_clip_rect();
+            if let Some((cmin, cmax)) = clip_rect(min, max, clip) {
+                self.add_rect_outline(cmin, cmax, outline);
+            }
+        }
+    }
+
+    fn add_solid_rect_with_outline(
+        &mut self,
+        min: Vec2,
+        max: Vec2,
+        uv_min: Vec2,
+        uv_max: Vec2,
+        tint: RGBA,
+        outline: Outline,
+    ) {
+        let clip = self.curr_clip_rect();
+
+        // Draw outline background first
+        let outset = outline.width * 0.5;
+        let outline_min = min - Vec2::splat(outset);
+        let outline_max = max + Vec2::splat(outset);
+
+        if let Some((outline_clipped_min, outline_clipped_max)) = clip_rect(outline_min, outline_max, clip) {
+            let outline_uvs = compute_proportional_uvs(
+                outline_min, outline_max, 
+                outline_clipped_min, outline_clipped_max,
+                uv_min, uv_max
+            );
+            self.push_rect_vertices(
+                outline_clipped_min, outline_clipped_max, 
+                outline_uvs.0, outline_uvs.1, 
+                outline.col, 0
+            );
+        }
+
+        // Draw fill on top
+        if let Some((fill_clipped_min, fill_clipped_max)) = clip_rect(min, max, clip) {
+            let fill_uvs = compute_clipped_uvs(min, max, fill_clipped_min, fill_clipped_max, uv_min, uv_max);
+            self.push_rect_vertices(
+                fill_clipped_min, fill_clipped_max, 
+                fill_uvs.0, fill_uvs.1, 
+                tint, 0
+            );
+        }
+    }
+
+
+
+    fn add_simple_rect(
+        &mut self,
+        min: Vec2,
+        max: Vec2,
+        uv_min: Vec2,
+        uv_max: Vec2,
+        tex_id: u32,
+        tint: RGBA,
+    ) {
+
+        let clip = self.curr_clip_rect();
+        let Some((cmin, cmax)) = clip_rect(min, max, clip) else {
+            return
+        };
+
+        self.push_texture(tex_id);
+        let clipped_uvs = compute_clipped_uvs(min, max, cmin, cmax, 
+            uv_min, uv_max);
+
+        let start = self.vtx_buffer.len();
+        self.push_rect_vertices(cmin, cmax, clipped_uvs.0, clipped_uvs.1, tint, tex_id);
+
+        if tex_id != 0 {
+            let end = start + 4;
+            self.distribute_uvs(start, end, cmin, cmax, 
+                clipped_uvs.0, clipped_uvs.1, true, tex_id);
+        }
+    }
+
+    fn add_rect_outline(&mut self, min: Vec2, max: Vec2, outline: Outline) {
+        let pts = [
+            Vec2::new(min.x, max.y),  // bottom-left
+            max,                      // top-right  
+            Vec2::new(max.x, min.y),  // top-left
+            min,                      // bottom-right
+        ];
+        let (vtx, idx) = tessellate_line(&pts, outline.col, outline.width, true);
+        self.push_vtx_idx(&vtx, &idx);
+    }
+}
+
+
+fn clip_rect(min: Vec2, max: Vec2, clip: Rect) -> Option<(Vec2, Vec2)> {
+    let clipped_min = min.max(clip.min);
+    let clipped_max = max.min(clip.max);
+    
+    if clipped_min.x >= clipped_max.x || clipped_min.y >= clipped_max.y {
+        None
+    } else {
+        Some((clipped_min, clipped_max))
+    }
+}
+
+fn compute_clipped_uvs(
+    omin: Vec2,
+    omax: Vec2,
+    cmin: Vec2,
+    cmax: Vec2,
+    uv_min: Vec2,
+    uv_max: Vec2,
+) -> (Vec2, Vec2) {
+    let orig_size = omax - omin;
+    let clipped_offset = cmin - omin;
+    let clipped_size = cmax - cmin;
+    
+    let mut result_uv_min = uv_min;
+    let mut result_uv_max = uv_max;
+    
+    if orig_size.x != 0.0 {
+        let start_ratio = clipped_offset.x / orig_size.x;
+        let end_ratio = (clipped_offset.x + clipped_size.x) / orig_size.x;
+        let uv_range = uv_max.x - uv_min.x;
+        result_uv_min.x = uv_min.x + start_ratio * uv_range;
+        result_uv_max.x = uv_min.x + end_ratio * uv_range;
+    }
+    
+    if orig_size.y != 0.0 {
+        let start_ratio = clipped_offset.y / orig_size.y;
+        let end_ratio = (clipped_offset.y + clipped_size.y) / orig_size.y;
+        let uv_range = uv_max.y - uv_min.y;
+        result_uv_min.y = uv_min.y + start_ratio * uv_range;
+        result_uv_max.y = uv_min.y + end_ratio * uv_range;
+    }
+    
+    (result_uv_min, result_uv_max)
+}
+
+fn compute_proportional_uvs(
+    orig_min: Vec2,
+    orig_max: Vec2,
+    target_min: Vec2,
+    target_max: Vec2,
+    uv_min: Vec2,
+    uv_max: Vec2,
+) -> (Vec2, Vec2) {
+    let orig_size = orig_max - orig_min;
+    let uv_size = uv_max - uv_min;
+    
+    if orig_size.x == 0.0 || orig_size.y == 0.0 {
+        return (uv_min, uv_max);
+    }
+    
+    let start_offset = target_min - orig_min;
+    let end_offset = target_max - orig_min;
+    
+    let uv_start = Vec2::new(
+        uv_min.x + (start_offset.x / orig_size.x) * uv_size.x,
+        uv_min.y + (start_offset.y / orig_size.y) * uv_size.y,
+    );
+    
+    let uv_end = Vec2::new(
+        uv_min.x + (end_offset.x / orig_size.x) * uv_size.x,
+        uv_min.y + (end_offset.y / orig_size.y) * uv_size.y,
+    );
+    
+    (uv_start, uv_end)
 }
 
 pub fn tessellate_line(
@@ -3109,34 +3456,40 @@ pub struct DrawRect<'a> {
     pub draw_list: &'a mut DrawList,
     pub min: Vec2,
     pub max: Vec2,
-    pub uv_min: Option<Vec2>,
-    pub uv_max: Option<Vec2>,
+    pub uv_min: Vec2,
+    pub uv_max: Vec2,
     pub texture_id: u32,
-    pub fill: Option<RGBA>,
-    pub outline: Option<(RGBA, f32, OutlinePlacement)>,
+    pub fill: RGBA,
+    pub outline: Outline,
     pub corner_radii: [f32; 4],
 }
 
 impl DrawRect<'_> {
     pub fn fill(mut self, fill: RGBA) -> Self {
-        self.fill = Some(fill);
+        self.fill = fill;
         self
     }
 
-    pub fn outline(mut self, color: RGBA, width: f32, placement: Option<OutlinePlacement>) -> Self {
-        self.outline = Some((color, width, placement.unwrap_or_default()));
+    pub fn outline(mut self, outline: Outline) -> Self {
+        self.outline = outline;
         self
     }
 
     pub fn texture_uv(mut self, uv_min: Vec2, uv_max: Vec2, id: u32) -> Self {
-        self.uv_min = Some(uv_min);
-        self.uv_max = Some(uv_max);
+        self.uv_min = uv_min;
+        self.uv_max = uv_max;
         self.texture_id = id;
+        if self.fill.a == 0.0 {
+            self.fill = RGBA::WHITE
+        }
         self
     }
 
     pub fn texture(mut self, id: u32) -> Self {
         self.texture_id = id;
+        if self.fill.a == 0.0 {
+            self.fill = RGBA::WHITE
+        }
         self
     }
 
@@ -3167,7 +3520,7 @@ impl DrawRect<'_> {
     }
 
     pub fn add(self) {
-        self.draw_list.add_rect_full(
+        self.draw_list.add_rect_rounded(
             self.min,
             self.max,
             self.uv_min,

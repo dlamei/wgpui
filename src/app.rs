@@ -336,7 +336,6 @@ impl App {
         ui.draw_debug = self.dbg_wireframe;
         ui.begin_frame();
 
-        ui.next.outline = Some((RGBA::DARK_BLUE, 5.0));
 
         // if let Some(p) = ui.get_panel_with_name("Debug") {
         //     ui.next.min_size = p.full_size;
@@ -351,7 +350,6 @@ impl App {
         ui.text("Hello World");
         ui.end();
 
-        ui.next.outline = Some((RGBA::MAGENTA, 5.0));
         ui.begin("test2");
         ui.button("test button");
         ui.button("the quick brown fox jumps over the lazy dog");
