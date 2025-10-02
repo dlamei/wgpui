@@ -346,16 +346,85 @@ pub fn lorem(input: TokenStream) -> TokenStream {
 // }
 
 
-struct FlagsInput {
-    ty: Ident,
-    flags: Punctuated<Ident, Token![,]>,
+// struct FlagsInput {
+//     ty: Ident,
+//     flags: Punctuated<Ident, Token![,]>,
+// }
+
+// impl syn::parse::Parse for FlagsInput {
+//     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+//         let ty: Ident = input.parse()?;
+//         input.parse::<Token![:]>()?;
+//         let flags = Punctuated::<Ident, Token![,]>::parse_terminated(input)?;
+//         Ok(FlagsInput { ty, flags })
+//     }
+// }
+
+// #[proc_macro]
+// pub fn flags(input: TokenStream) -> TokenStream {
+//     let FlagsInput { ty, flags } = parse_macro_input!(input as FlagsInput);
+
+//     let mut consts = Vec::new();
+//     for (i, flag) in flags.iter().enumerate() {
+//         let shift = i as u32;
+//         consts.push(quote! {
+//             const #flag = 1 << #shift;
+//         });
+//     }
+
+//     let expanded = quote! {
+//         bitflags::bitflags! {
+//             #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+//             pub struct #ty: u32 {
+//                 const NONE = 0;
+//                 #(#consts)*
+//             }
+//         }
+
+//         impl #ty {
+//             pub fn has(self, other: #ty) -> bool {
+//                 self.contains(other)
+//             }
+//         }
+//     };
+
+//     TokenStream::from(expanded)
+// }
+
+enum FlagItem {
+    Auto(Ident),
+    OrAssign(Ident, syn::Expr),
+    Assign(Ident, syn::Expr),
 }
 
-impl syn::parse::Parse for FlagsInput {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+impl Parse for FlagItem {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: Ident = input.parse()?;
+        if input.peek(Token![|]) && input.peek2(Token![=]) {
+            input.parse::<Token![|]>()?;
+            input.parse::<Token![=]>()?;
+            let expr: syn::Expr = input.parse()?;
+            Ok(FlagItem::OrAssign(name, expr))
+        } else if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            let expr: syn::Expr = input.parse()?;
+            Ok(FlagItem::Assign(name, expr))
+        } else {
+            Ok(FlagItem::Auto(name))
+        }
+    }
+}
+
+struct FlagsInput {
+    ty: Ident,
+    flags: Punctuated<FlagItem, Token![,]>,
+}
+
+impl Parse for FlagsInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
         let ty: Ident = input.parse()?;
         input.parse::<Token![:]>()?;
-        let flags = Punctuated::<Ident, Token![,]>::parse_terminated(input)?;
+        let flags = Punctuated::<FlagItem, Token![,]>::parse_terminated(input)?;
         Ok(FlagsInput { ty, flags })
     }
 }
@@ -365,11 +434,25 @@ pub fn flags(input: TokenStream) -> TokenStream {
     let FlagsInput { ty, flags } = parse_macro_input!(input as FlagsInput);
 
     let mut consts = Vec::new();
-    for (i, flag) in flags.iter().enumerate() {
+    for (i, flag_item) in flags.iter().enumerate() {
         let shift = i as u32;
-        consts.push(quote! {
-            const #flag = 1 << #shift;
-        });
+        match flag_item {
+            FlagItem::Auto(ident) => {
+                consts.push(quote! {
+                    const #ident = 1 << #shift;
+                });
+            }
+            FlagItem::OrAssign(ident, expr) => {
+                consts.push(quote! {
+                    const #ident = 1 << #shift | Self::#expr.bits();
+                });
+            }
+            FlagItem::Assign(ident, expr) => {
+                consts.push(quote! {
+                    const #ident = #expr;
+                });
+            }
+        }
     }
 
     let expanded = quote! {
@@ -390,3 +473,10 @@ pub fn flags(input: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
+
+
+
+
+
+
+

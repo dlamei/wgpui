@@ -2,7 +2,7 @@ use std::{fmt, ops};
 
 use glam::Vec2;
 
-use crate::utils::{Duration, Instant};
+use crate::core::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MouseBtn {
@@ -53,7 +53,7 @@ impl MouseState {
         }
     }
 
-    pub fn drag_start(&mut self, button: MouseBtn) -> Option<Vec2> {
+    pub fn drag_start(&self, button: MouseBtn) -> Option<Vec2> {
         let b = self.buttons[button];
         if b.dragging || b.released {
             b.press_start_pos
@@ -377,6 +377,9 @@ pub enum CursorIcon {
     ResizeSW,
     ResizeW,
     ResizeNW,
+
+    MoveH,
+    MoveV,
 }
 
 impl CursorIcon {
@@ -398,18 +401,21 @@ impl CursorIcon {
 impl From<CursorIcon> for winit::window::Cursor {
     fn from(value: CursorIcon) -> Self {
         use winit::window::CursorIcon as WCI;
+        use CursorIcon as CI;
         match value {
-            CursorIcon::Default => WCI::Default,
-            CursorIcon::Pointer => WCI::Pointer,
-            CursorIcon::Text => WCI::Text,
-            CursorIcon::ResizeN => WCI::NResize,
-            CursorIcon::ResizeNE => WCI::NeResize,
-            CursorIcon::ResizeE => WCI::EResize,
-            CursorIcon::ResizeSE => WCI::SeResize,
-            CursorIcon::ResizeS => WCI::SResize,
-            CursorIcon::ResizeSW => WCI::SwResize,
-            CursorIcon::ResizeW => WCI::WResize,
-            CursorIcon::ResizeNW => WCI::NwResize,
+            CI::Default => WCI::Default,
+            CI::Pointer => WCI::Pointer,
+            CI::Text => WCI::Text,
+            CI::ResizeN => WCI::NResize,
+            CI::ResizeNE => WCI::NeResize,
+            CI::ResizeE => WCI::EResize,
+            CI::ResizeSE => WCI::SeResize,
+            CI::ResizeS => WCI::SResize,
+            CI::ResizeSW => WCI::SwResize,
+            CI::ResizeW => WCI::WResize,
+            CI::ResizeNW => WCI::NwResize,
+            CI::MoveH => WCI::EwResize,
+            CI::MoveV => WCI::NsResize,
         }
         .into()
     }

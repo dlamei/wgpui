@@ -11,12 +11,11 @@ use winit::{
 
 use crate::{
     Vertex, VertexPosCol, build,
+    core::{self, Duration, HashMap, Instant, RGBA},
     gpu::{self, WGPU, WGPUHandle, Window, WindowId},
     mouse::{self, MouseBtn},
     rect::Rect,
-    ui::{self, WidgetId, WidgetOpt},
-    ui2,
-    utils::{self, Duration, HashMap, Instant, RGBA},
+    ui,
 };
 
 #[derive(Debug, Clone)]
@@ -97,7 +96,7 @@ impl AppSetup {
         // let scale_factor = window_handle.scale_factor() as f32;
         // let window_handle_2 = window_handle.clone();
 
-        let (window, wgpu) = utils::futures::wait_for(async move {
+        let (window, wgpu) = core::futures::wait_for(async move {
             WGPU::new_async(window, size.width, size.height).await
         });
 
@@ -218,9 +217,8 @@ impl ApplicationHandler for AppSetup {
 }
 
 pub struct App {
-    pub ui2: ui2::Context,
+    pub ui: ui::Context,
 
-    pub dbg_wireframe: bool,
     pub mouse_pos: Vec2,
 
     pub prev_frame_time: Instant,
@@ -238,9 +236,7 @@ impl App {
         // let mut windows = HashMap::new();
         // windows.insert(main_window, window.clone());
         Self {
-            // ui: ui::State::new(wgpu.clone(), window.clone()),
-            ui2: ui2::Context::new(wgpu.clone(), window),
-            dbg_wireframe: false,
+            ui: ui::Context::new(wgpu.clone(), window),
             prev_frame_time: Instant::now(),
             delta_time: Duration::ZERO,
             mouse_pos: Vec2::NAN,
@@ -254,18 +250,14 @@ impl App {
         // if self.window.id() != window_id {
         //     return;
         // // }
-        let w_size = self.ui2.window.window_size();
+        let w_size = self.ui.window.window_size();
         let w_rect = Rect::from_min_size(Vec2::ZERO, w_size);
-
-        let resize_dir = ui::is_in_resize_region(w_rect, self.mouse_pos, self.ui2.resize_threshold);
-        // let mut dragging = false;
 
         match event {
             WE::CursorMoved { position: pos, .. } => {
                 self.mouse_pos = (pos.x as f32, pos.y as f32).into();
-                // self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
-                self.ui2.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
-                if id == self.ui2.window.id && !self.ui2.window.raw.has_focus() {
+                self.ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
+                if id == self.ui.window.id && !self.ui.window.raw.has_focus() {
                     self.on_update(event_loop);
                     self.on_redraw(event_loop, id);
 
@@ -278,6 +270,7 @@ impl App {
                 // self.ui.cursor_in_window = true;
             }
             WE::CursorLeft { .. } => {
+                // self.ui.mouse_in_window = false;
                 // self.ui.cursor_in_window = true;
             }
 
@@ -290,16 +283,13 @@ impl App {
 
                 match button {
                     MouseButton::Left => {
-                        // self.ui.set_mouse_press(MouseBtn::Left, pressed);
-                        self.ui2.set_mouse_press(MouseBtn::Left, pressed);
+                        self.ui.set_mouse_press(MouseBtn::Left, pressed);
                     }
                     MouseButton::Middle => {
-                        // self.ui.set_mouse_press(MouseBtn::Middle, pressed);
-                        self.ui2.set_mouse_press(MouseBtn::Middle, pressed);
+                        self.ui.set_mouse_press(MouseBtn::Middle, pressed);
                     }
                     MouseButton::Right => {
-                        // self.ui.set_mouse_press(MouseBtn::Right, pressed);
-                        self.ui2.set_mouse_press(MouseBtn::Left, pressed);
+                        self.ui.set_mouse_press(MouseBtn::Left, pressed);
                     }
                     _ => (),
                 }
@@ -307,8 +297,8 @@ impl App {
             WE::RedrawRequested => {
                 if id == self.main_window {
                     self.on_update(event_loop);
-                    let pid = self.ui2.get_panel_with_name("#ROOT_PANEL");
-                    if self.ui2.close_pressed {
+                    let pid = self.ui.get_panel_with_name("#ROOT_PANEL");
+                    if self.ui.close_pressed {
                         event_loop.exit();
                     }
                 }
@@ -319,7 +309,7 @@ impl App {
             }
             WE::Resized(PhysicalSize { width, height }) => {
                 let (width, height) = (width.max(1), height.max(1));
-                self.ui2.resize_window(id, width, height);
+                self.ui.resize_window(id, width, height);
 
                 // self.windows
                 //     .get_mut(&id)
@@ -332,15 +322,13 @@ impl App {
     }
 
     fn on_update(&mut self, event_loop: &ActiveEventLoop) {
-        let ui = &mut self.ui2;
-        ui.draw_debug = self.dbg_wireframe;
+        let ui = &mut self.ui;
         ui.begin_frame();
-
 
         // if let Some(p) = ui.get_panel_with_name("Debug") {
         //     ui.next.min_size = p.full_size;
         // }
-        ui.begin_ex("Debug", ui2::PanelFlags::NO_TITLEBAR);
+        ui.begin_ex("Debug", ui::PanelFlags::NO_TITLEBAR);
         ui.set_current_panel_min_size(|prev, full, content| full);
 
         if ui.button("test button") {
@@ -350,144 +338,31 @@ impl App {
         ui.text("Hello World");
         ui.end();
 
-        ui.begin("test2");
-        ui.button("test button");
-        ui.button("the quick brown fox jumps over the lazy dog");
+        for i in 0..4 {
+            ui.begin(format!("test: {i}"));
+            ui.button("test button");
+            ui.same_line();
+            ui.checkbox_intern("checkbox");
+            ui.same_line();
+            ui.button("test button");
 
-        static mut check: bool = false;
-        let check_mut = unsafe { &mut *(&raw mut check) };
-        ui.checkbox("checkbox", check_mut);
+            ui.switch_intern("test");
+            ui.same_line();
+            ui.button("the quick brown fox jumps over the lazy dog");
 
-        ui.end();
+            ui.slider_f32_intern("test slider", 0.0, 10.0);
+            ui.end();
+        }
+
+        ui.debug_window();
 
         ui.end_frame(event_loop);
-
-        // log::info!("");
-        // log::info!("item : {}", ui.hot_id);
-        // log::info!("panel: {}", ui.hot_panel_id);
-
-        // let ui = &mut self.ui;
-
-        // // ui.set_mouse_pos(self.mouse_pos.x, self.mouse_pos.y);
-        // ui.start_frame();
-
-        // ui.begin_window("Atlas");
-        // ui.end_window();
-
-        // ui.add_debug_window(self.delta_time);
-        // // ui.add_window("window");
-
-        // // ui.begin_window();
-
-        // for i in 0..1 {
-        //     ui.begin_widget(
-        //         &format!("outer_{i}"),
-        //         WidgetOpt::new()
-        //             .draggable()
-        //             .fill(RGBA::CARMINE)
-        //             .corner_radius(40.0)
-        //             .outline(RGBA::DARK_BLUE, 10.0)
-        //             .padding(25.0)
-        //             .size_fit(),
-        //     );
-
-        //     ui.add_label(&format!("window: {}", i + 1), 64.0);
-        //     ui.offset_cursor_y(24.0);
-
-        //     ui.begin_widget(
-        //         "content",
-        //         WidgetOpt::new()
-        //             .fill(RGBA::INDIGO)
-        //             .spacing(40.0)
-        //             .padding(30.0)
-        //             .size_min_fit()
-        //             .size_max_px(1000.0, 1300.0)
-        //             .size_fit()
-        //             .resizable()
-        //             .corner_radius(40.0),
-        //     );
-
-        //     static mut toggle: bool = false;
-
-        //     if ui.add_button("hello") {
-        //         unsafe {
-        //             toggle = !toggle;
-        //         }
-        //     }
-
-        //     if unsafe { toggle } {
-        //         ui.begin_widget(
-        //             "toggle_rect",
-        //             WidgetOpt::new()
-        //                 .fill(RGBA::PASTEL_MINT)
-        //                 .padding(100.0)
-        //                 .size_px(200.0, 200.0),
-        //         );
-        //         ui.end_widget();
-        //     }
-
-        //     if ui.add_button("test") {
-        //         log::info!("test");
-        //     }
-
-        //     if ui.add_button("abcdefghijklmnopqrstuvwxyz") {
-        //         log::info!("abcdefghijklmnopqrstuvwxyz");
-        //     }
-
-        //     let (id, _) = ui.begin_widget(
-        //         "box 2",
-        //         WidgetOpt::new()
-        //             .fill(RGBA::CARMINE)
-        //             .spacing(40.0)
-        //             .padding(10.0)
-        //             .layout_h()
-        //             .corner_radius(30.0)
-        //             .size_fit(),
-        //     );
-
-        //     let (_, signal) = ui.begin_widget(
-        //         "green circle",
-        //         WidgetOpt::new()
-        //             .fill(RGBA::GREEN)
-        //             .clickable()
-        //             .resizable()
-        //             .corner_radius(100.0),
-        //     );
-
-        //     if signal.double_clicked() {
-        //         log::info!("inner rect released");
-        //     }
-
-        //     ui.end_widget();
-
-        //     let offset = ui[id].rect.height() / 2.0;
-        //     ui.offset_cursor_y(offset);
-        //     ui.set_next_placement_y(ui::Placement::Center);
-        //     // ui.set_next_widget_placement(ui::WidgetPlacement::Center);
-
-        //     if ui.add_button("hello world") {
-        //         log::info!("hello world");
-        //     }
-
-        //     ui.end_widget();
-
-        //     ui.end_widget();
-        //     ui.end_widget();
-        // }
-
-        // ui.draw_dbg_wireframe = self.dbg_wireframe;
-
-        // ui.end_frame();
     }
 
     fn on_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
         use winit::keyboard::{KeyCode, PhysicalKey};
         match event.physical_key {
-            PhysicalKey::Code(KeyCode::KeyD) => {
-                if event.state.is_pressed() {
-                    self.dbg_wireframe = !self.dbg_wireframe;
-                }
-            }
+            PhysicalKey::Code(KeyCode::KeyD) => if event.state.is_pressed() {},
             _ => (),
         }
     }
@@ -500,17 +375,16 @@ impl App {
         self.delta_time = dt;
 
         {
-            let window = self.ui2.get_mut_window(id);
+            let window = self.ui.get_mut_window(id);
             let Some(mut target) = window.prepare_frame(&self.wgpu) else {
                 return;
             };
 
             target.render(&ClearScreen(RGBA::rgba_f(0.0, 0.0, 0.0, 0.0)));
-            // target.render(&self.ui.draw);
-            target.render(&self.ui2.draw);
+            target.render(&self.ui.draw);
         }
 
-        let window = self.ui2.get_mut_window(id);
+        let window = self.ui.get_mut_window(id);
         window.present_frame();
         window.request_redraw();
     }

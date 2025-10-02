@@ -1,19 +1,16 @@
 pub mod app;
+mod core;
 mod gpu;
 mod mouse;
-mod mouse2;
 pub mod rect;
 mod ui;
-mod ui2;
-mod ui_draw;
-mod utils;
+mod ui_items;
 
 use std::sync::Arc;
 
+use core::RGBA;
 use glam::Vec4;
 use gpu::{VertexDesc, WGPU};
-use macros::vertex;
-use utils::RGBA;
 use wgpu::util::DeviceExt;
 
 pub extern crate self as wgpui;
@@ -21,7 +18,7 @@ pub extern crate self as wgpui;
 pub use gpu::AsVertexFormat;
 pub use gpu::Vertex;
 
-#[vertex]
+#[macros::vertex]
 pub struct VertexPosCol {
     pub pos: Vec4,
     pub col: RGBA,

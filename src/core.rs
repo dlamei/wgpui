@@ -1,5 +1,7 @@
 use std::{fmt, hash, mem};
 
+use crate::mouse;
+
 pub type HashMap<K, V> = ahash::AHashMap<K, V>;
 pub type HashSet<T> = ahash::AHashSet<T>;
 
@@ -148,6 +150,15 @@ impl RGBA {
         }
     }
 
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let (c1, c2) = (self, other);
+        let r = c1.r + (c2.r - c1.r) * t;
+        let g = c1.g + (c2.g - c1.g) * t;
+        let b = c1.b + (c2.b - c1.b) * t;
+        let a = c1.a + (c2.a - c1.a) * t;
+        Self::rgba_f(r, g, b, a)
+    }
+
     pub fn map_linear_to_srgb(&self) -> Self {
         let r = Self::linear_to_srgb(self.r);
         let g = Self::linear_to_srgb(self.g);
@@ -190,6 +201,7 @@ impl RGBA {
     pub const RED: RGBA = RGBA::rgb(255, 0, 0);
     pub const GREEN: RGBA = RGBA::rgb(0, 255, 0);
     pub const BLUE: RGBA = RGBA::rgb(0, 0, 255);
+    pub const YELLOW: RGBA = RGBA::rgb(255, 255, 0);
 
     pub const PURPLE: RGBA = RGBA::hex("#740580");
     pub const MAGENTA: RGBA = RGBA::hex("#B10065");
@@ -785,6 +797,341 @@ impl<T, const N: usize> std::ops::IndexMut<usize> for ArrVec<T, N> {
         self.get_mut(index).expect("index out of bounds")
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Dir {
+    N,
+    NE,
+    E,
+    SE,
+    S,
+    SW,
+    W,
+    NW,
+}
+
+impl Dir {
+    pub fn as_cursor(self) -> mouse::CursorIcon {
+        match self {
+            Dir::N => mouse::CursorIcon::ResizeN,
+            Dir::NE => mouse::CursorIcon::ResizeNE,
+            Dir::E => mouse::CursorIcon::ResizeE,
+            Dir::SE => mouse::CursorIcon::ResizeSE,
+            Dir::S => mouse::CursorIcon::ResizeS,
+            Dir::SW => mouse::CursorIcon::ResizeSW,
+            Dir::W => mouse::CursorIcon::ResizeW,
+            Dir::NW => mouse::CursorIcon::ResizeNW,
+        }
+    }
+
+    pub fn has_n(&self) -> bool {
+        matches!(self, Self::N | Self::NE | Self::NW)
+    }
+    pub fn has_e(&self) -> bool {
+        matches!(self, Self::E | Self::NE | Self::SE)
+    }
+    pub fn has_s(&self) -> bool {
+        matches!(self, Self::S | Self::SE | Self::SW)
+    }
+    pub fn has_w(&self) -> bool {
+        matches!(self, Self::W | Self::NW | Self::SW)
+    }
+
+    pub fn as_winit_resize(&self) -> winit::window::ResizeDirection {
+        use winit::window::ResizeDirection as RD;
+        match self {
+            Dir::N => RD::North,
+            Dir::NE => RD::NorthEast,
+            Dir::E => RD::East,
+            Dir::SE => RD::SouthEast,
+            Dir::S => RD::South,
+            Dir::SW => RD::SouthWest,
+            Dir::W => RD::West,
+            Dir::NW => RD::NorthWest,
+        }
+    }
+}
+
+macro_rules! id_type {
+    ($id_ty:ident) => {
+        #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        pub struct $id_ty(pub u64);
+
+        impl $id_ty {
+            pub const NULL: $id_ty = $id_ty(0);
+
+            pub fn from_str(s: &str) -> Self {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = ahash::AHasher::default();
+                s.hash(&mut hasher);
+                Self(hasher.finish().max(1))
+            }
+
+            pub fn is_null(&self) -> bool {
+                self.0 == 0
+            }
+        }
+
+        impl fmt::Debug for $id_ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let id = format!("{self}");
+                f.debug_tuple(&stringify!($id_ty)).field(&id).finish()
+            }
+        }
+
+        impl fmt::Display for $id_ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let mut n = self.0;
+                if n == 0 {
+                    return write!(f, "0");
+                }
+                let mut buf = Vec::new();
+                while n > 0 {
+                    let rem = (n % 36) as u8;
+                    let ch = if rem < 10 {
+                        b'0' + rem
+                    } else {
+                        b'A' + (rem - 10)
+                    };
+                    buf.push(ch);
+                    n /= 36;
+                }
+                buf.reverse();
+                let s = std::str::from_utf8(&buf).unwrap();
+                write!(f, "{}", s)
+            }
+        }
+
+        impl hash::Hash for $id_ty {
+            fn hash<H: hash::Hasher>(&self, state: &mut H) {
+                assert!(!self.is_null());
+                self.0.hash(state)
+            }
+        }
+
+        // impl PartialEq for Id {
+        //     fn eq(&self, other: &Self) -> bool {
+        //         if self.is_null() || other.is_null() {
+        //             false
+        //         } else {
+        //             self.0 == other.0
+        //         }
+        //     }
+        // }
+
+        // impl Eq for Id {}
+    };
+}
+pub(crate) use id_type;
+
+// a bit ugly... :(
+macro_rules! stacked_fields_struct {
+    (@count: ) => {
+        0
+    };
+
+    (@count: $t0:ty, $($t:ty,)*) => {
+        1 + stacked_fields_struct!(@count: $($t,)*)
+    };
+
+    (@index[$n:expr]: $s:ident,) => {
+    };
+
+    (@index[$n:expr]: $s:ident, $f0:ident, $($f:ident,)*) => {
+        paste::paste! {
+            if matches!($s, Self::[< $f0:camel >](_)) { return $n };
+            stacked_fields_struct!(@index[($n+1)]: $s, $($f,)*);
+        }
+    };
+
+    (@index2[$n:expr]: $s:ident,) => {
+    };
+
+    (@index2[$n:expr]: $s:ident, $f0:ident, $($f:ident,)*) => {
+        paste::paste! {
+            if matches!($s, Self::[< $f0:camel >]) { return $n };
+            stacked_fields_struct!(@index2[($n+1)]: $s, $($f,)*);
+        }
+    };
+
+    ($name:ident { $($field:ident: $ty:ty,)* }) => {paste::paste! {
+
+        pub use [< _stacked_fields_struct_ $name:snake _impl >]::{
+            [<$name Table>],
+            [<$name Var>],
+            [<$name Field>],
+        };
+
+        mod [< _stacked_fields_struct_ $name:snake _impl >] {
+            pub use super::*;
+
+            pub type Table = [<$name Table>];
+            pub type Var = [<$name Var>];
+            pub type Field = [<$name Field>];
+
+            #[derive(Debug, Clone, PartialEq)]
+            pub struct [< $name Table >] {
+                pub values: [Var; Self::N_VARIABLES],
+                pub var_stack: Vec<Var>,
+            }
+
+            impl Table {
+                pub const N_VARIABLES: usize = stacked_fields_struct!(@count: $($ty,)*);
+
+                pub fn init(map: impl Fn(Field) -> Var) -> Self {
+                    let fields: [Field; Self::N_VARIABLES] = Field::list(); // must be an array
+                    let values = std::array::from_fn(|i| {
+                        let f_idx = fields[i].index();
+                        let res = map(fields[i]);
+                        let v_idx = res.index();
+                        assert_eq!(f_idx, v_idx);
+                        res
+                    });
+                    Self { values, var_stack: vec![] }
+                }
+
+                pub fn push_var(&mut self, mut var: Var) {
+                    let v_idx = var.index();
+                    std::mem::swap(&mut self.values[v_idx], &mut var);
+                    self.var_stack.push(var);
+                }
+
+                pub fn set_var(&mut self, mut var: Var) -> Var {
+                    let v_idx = var.index();
+                    std::mem::swap(&mut self.values[v_idx], &mut var);
+                    var
+                }
+
+                pub fn pop_var(&mut self) {
+                    let var = self.var_stack.pop().unwrap();
+                    self.values[var.index()] = var;
+                }
+
+                $(
+                    pub fn $field(&self) -> $ty {
+                        let Var::[<$field:camel>](val) = self[Field::[<$field:camel>]] else {
+
+                            panic!("unexpected var for {}, should be {:?}, was {:?}", stringify!($field), stringify!(Var::[<$field:camel>]), self[Field::[<$field:camel>]])
+                        };
+                        val
+                    }
+                )*
+            }
+
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+            pub enum [< $name Field >] {
+                $([< $field:camel >]),+
+            }
+
+            impl Field {
+                pub fn index(&self) -> usize {
+                    stacked_fields_struct!(@index2[0]: self, $($field,)*);
+                    unreachable!();
+                }
+
+                pub fn list() -> [Self; Table::N_VARIABLES] {
+                    [$(Self:: [<$field:camel>],)*]
+                }
+            }
+
+            impl Var {
+
+                pub fn index(&self) -> usize {
+                    stacked_fields_struct!(@index[0]: self, $($field,)*);
+                    unreachable!();
+                }
+            }
+
+            #[derive(Debug, Clone, Copy, PartialEq)]
+            pub enum [< $name Var>] {
+                $([< $field:camel >]($ty)),+
+            }
+
+
+            impl std::ops::Index<Field> for Table {
+                type Output = Var;
+
+                fn index(&self, field: Field) -> &Self::Output {
+                    &self.values[field.index()]
+                }
+            }
+
+            impl std::ops::IndexMut<Field> for Table {
+                fn index_mut(&mut self, field: Field) -> &mut Self::Output {
+                    &mut self.values[field.index()]
+                }
+            }
+        }
+
+
+    }}
+}
+pub(crate) use stacked_fields_struct;
+
+
+pub struct DataMap<K> {
+    data: HashMap<K, Box<dyn std::any::Any>>,
+}
+
+impl<K: Eq + hash::Hash> DataMap<K> {
+    pub fn new() -> Self {
+        Self {
+            data: HashMap::new(),
+        }
+    }
+
+    pub fn get<T: 'static>(&self, key: &K) -> Option<&T> {
+        self.data.get(key)?.downcast_ref::<T>()
+    }
+
+    pub fn get_mut<T: 'static>(&mut self, key: &K) -> Option<&mut T> {
+        self.data.get_mut(key)?.downcast_mut::<T>()
+    }
+
+    pub fn insert<T: 'static>(&mut self, key: K, value: T) {
+        self.data.insert(key, Box::new(value));
+    }
+
+    pub fn get_or_insert<T: 'static>(&mut self, key: K, value: T) -> &mut T 
+    where
+        K: Clone,
+    {
+        self.data.entry(key)
+            .or_insert_with(|| Box::new(value))
+            .downcast_mut::<T>()
+            .expect("Type mismatch in TypeMap")
+    }
+
+    pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(
+        &mut self, 
+        key: K, 
+        f: F
+    ) -> &mut T {
+        self.data.entry(key)
+            .or_insert_with(|| Box::new(f()))
+            .downcast_mut::<T>()
+            .expect("Type mismatch in TypeMap")
+    }
+
+    pub fn remove(&mut self, key: &K) -> bool {
+        self.data.remove(key).is_some()
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.data.contains_key(key)
+    }
+
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+}
+
+impl<K: Eq + hash::Hash> Default for DataMap<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 
 // Example usage and tests
 #[cfg(test)]

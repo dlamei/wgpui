@@ -277,11 +277,30 @@ impl Rect {
         self.contains(other.min) && self.contains(other.max)
     }
 
+    #[must_use]
+    pub fn overlaps(&self, other: Self) -> bool {
+        self.min.x < other.max.x
+            && self.max.x > other.min.x
+            && self.min.y < other.max.y
+            && self.max.y > other.min.y
+    }
+
+
     /// Return the given points clamped to be inside the rectangle
     /// Panics if [`Self::is_negative`].
     #[must_use]
     pub fn clamp(&self, p: Vec2) -> Vec2 {
         p.clamp(self.min, self.max)
+    }
+
+    #[must_use]
+    pub fn clip(&self, p: Self) -> Option<Self> {
+        if self.overlaps(p){
+            let mut clip = Self::from_min_max(self.min.max(p.min), self.max.min(p.max));
+            Some(clip)
+        } else {
+            None
+        }
     }
 
     #[inline(always)]

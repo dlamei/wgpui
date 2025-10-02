@@ -7,10 +7,9 @@ use std::{
 use glam::Vec2;
 
 use crate::{
+    core::{self, HashMap},
     mouse,
     rect::Rect,
-    ui,
-    utils::{self, HashMap},
 };
 
 #[derive(Debug, Clone)]
@@ -376,8 +375,8 @@ impl_as_vertex_fmt! {
     glam::Vec3: Float32x3: "vec3<f32>",
     glam::Vec4: Float32x4: "vec4<f32>",
 
-    utils::RGB: Float32x3: "vec3<f32>",
-    utils::RGBA: Float32x4: "vec4<f32>",
+    core::RGB: Float32x3: "vec3<f32>",
+    core::RGBA: Float32x4: "vec4<f32>",
 }
 
 #[derive(Debug)]
@@ -1129,7 +1128,7 @@ impl Window {
         self.raw.set_cursor(icon);
     }
 
-    pub fn start_drag_resize_window(&self, dir: ui::Dir) {
+    pub fn start_drag_resize_window(&self, dir: core::Dir) {
         if self.is_maximized() {
             return;
         }

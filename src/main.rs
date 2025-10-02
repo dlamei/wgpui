@@ -1,13 +1,11 @@
 fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            unsafe {
+        unsafe {
+            if std::env::var("WAYLAND_DISPLAY").is_ok() {
                 std::env::remove_var("WAYLAND_DISPLAY");
             }
-        }
 
-        unsafe {
             std::env::set_var("RUST_BACKTRACE", "1");
         }
 
