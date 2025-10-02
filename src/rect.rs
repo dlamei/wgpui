@@ -285,7 +285,6 @@ impl Rect {
             && self.max.y > other.min.y
     }
 
-
     /// Return the given points clamped to be inside the rectangle
     /// Panics if [`Self::is_negative`].
     #[must_use]
@@ -295,7 +294,7 @@ impl Rect {
 
     #[must_use]
     pub fn clip(&self, p: Self) -> Option<Self> {
-        if self.overlaps(p){
+        if self.overlaps(p) {
             let mut clip = Self::from_min_max(self.min.max(p.min), self.max.min(p.max));
             Some(clip)
         } else {

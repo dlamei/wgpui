@@ -1,14 +1,18 @@
+use cosmic_text as ctext;
+use glam::{Mat4, UVec2, Vec2};
 use std::{
     cell::{Ref, RefCell},
     fmt, hash,
     rc::Rc,
 };
-use cosmic_text as ctext;
-use glam::{Mat4, UVec2, Vec2};
 use wgpu::util::DeviceExt;
 
 use crate::{
-    core::{id_type, stacked_fields_struct, ArrVec, DataMap, Dir, HashMap, Instant, RGBA}, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{CursorIcon, MouseBtn, MouseState}, rect::Rect, Vertex as VertexTyp
+    Vertex as VertexTyp,
+    core::{ArrVec, DataMap, Dir, HashMap, Instant, RGBA, id_type, stacked_fields_struct},
+    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
+    mouse::{CursorIcon, MouseBtn, MouseState},
+    rect::Rect,
 };
 
 fn dark_theme() -> StyleTable {
@@ -113,9 +117,9 @@ pub struct Context {
     pub n_draw_calls: usize,
 
     pub draw: MergedDrawLists,
-    pub glyph_cache: GlyphCache,
-    pub text_item_cache: TextItemCache,
-    pub font_table: FontTable,
+    pub glyph_cache: RefCell<GlyphCache>,
+    pub text_item_cache: RefCell<TextItemCache>,
+    pub font_table: RefCell<FontTable>,
 
     pub close_pressed: bool,
     pub window: Window,
@@ -164,7 +168,6 @@ impl Context {
             draw_item_outline: false,
             circle_max_err: 0.3,
 
-
             frame_count: 0,
             prev_frame_time: Instant::now(),
             mouse: MouseState::new(),
@@ -173,9 +176,9 @@ impl Context {
             resize_threshold: 10.0,
             n_draw_calls: 0,
 
-            glyph_cache,
-            text_item_cache: TextItemCache::new(),
-            font_table,
+            glyph_cache: RefCell::new(glyph_cache),
+            text_item_cache: RefCell::new(TextItemCache::new()),
+            font_table: RefCell::new(font_table),
 
             close_pressed: false,
             window,
@@ -252,9 +255,7 @@ impl Context {
         }
     }
 
-
     pub fn set_mouse_pos(&mut self, x: f32, y: f32) {
-
         self.mouse.set_mouse_pos(x, y);
 
         let w_size = self.window.window_size();
@@ -289,10 +290,14 @@ impl Context {
     }
 
     pub fn begin_ex(&mut self, name: impl Into<String>, flags: PanelFlags) {
-        fn next_window_pos(screen: Vec2, panel_size: Option<Vec2>) -> Vec2 {
+        fn next_window_pos(screen: Vec2, panel_size: Vec2) -> Vec2 {
             static mut PANEL_COUNT: u32 = 1;
             let offset = 60.0;
-            let size = panel_size.unwrap_or(Vec2::new(500.0, 300.0));
+            let size = if panel_size.is_finite() {
+                panel_size
+            } else {
+                Vec2::new(500.0, 300.0)
+            };
 
             let (x, y);
             unsafe {
@@ -320,12 +325,15 @@ impl Context {
             p.draw_order = self.draw_order.len();
             self.draw_order.push(id);
 
-            if self.next.pos.is_none() {
+            if self.next.pos.is_nan() {
                 p.pos = next_window_pos(self.draw.screen_size, self.next.size);
             }
         }
-        if let Some(pos) = self.next.pos {
-            p.pos = pos;
+        if self.next.pos.x.is_finite() {
+            p.pos.x = self.next.pos.x;
+        }
+        if self.next.pos.y.is_finite() {
+            p.pos.y = self.next.pos.y;
         }
 
         p.clear_temp_data();
@@ -393,8 +401,8 @@ impl Context {
         let panel_pos = p.pos;
 
         // bg
-        let panel_size = if let Some(size) = p.explicit_size {
-            size
+        let panel_size = if p.explicit_size.is_finite() {
+            p.explicit_size
         } else {
             p.size
         };
@@ -448,14 +456,18 @@ impl Context {
         // let p = &self.panels[id];
         if !p.flags.has(PanelFlags::NO_TITLEBAR) {
             // draw titlebar
+            let title_text = self.shape_text(&p.name, self.style.text_size());
             p.with_draw_list(|list| {
                 list.rect(
                     panel_pos,
                     panel_pos + Vec2::new(panel_size.x, p.titlebar_height),
                 )
-                    .fill(self.style.titlebar_color())
-                    .corners(CornerRadii::top(self.style.panel_corner_radius()))
-                    .add()
+                .fill(self.style.titlebar_color())
+                .corners(CornerRadii::top(self.style.panel_corner_radius()))
+                .add();
+
+                let pad = (p.titlebar_height - title_text.height) / 2.0;
+                list.add_text(p.pos + Vec2::splat(pad), &title_text, self.style.text_col())
             });
             // let tb_rect = Rect::from_min_size(p.pos, Vec2::new(panel_size.x, p.titlebar_height));
             // self.set_cursor_pos(panel_pos);
@@ -752,7 +764,6 @@ impl Context {
             }
         }
 
-
         sig
     }
 
@@ -827,14 +838,13 @@ impl Context {
     }
 
     pub fn available_content(&self) -> Vec2 {
-            // ImGuiContext& g = *GImGui;
-    // ImGuiWindow* window = g.CurrentWindow;
-    // ImVec2 mx = (window->DC.CurrentColumns || g.CurrentTable) ? window->WorkRect.Max : window->ContentRegionRect.Max;
-    // return mx - window->DC.CursorPos;
-    // 
+        // ImGuiContext& g = *GImGui;
+        // ImGuiWindow* window = g.CurrentWindow;
+        // ImVec2 mx = (window->DC.CurrentColumns || g.CurrentTable) ? window->WorkRect.Max : window->ContentRegionRect.Max;
+        // return mx - window->DC.CursorPos;
+        //
         let p = self.get_current_panel();
         (p.content_rect().max - p.cursor_pos()).max(Vec2::ZERO)
-
     }
 
     // based on: https://github.com/ocornut/imgui/blob/3dafd9e898290ca890c29a379188be9e53b88537/imgui.cpp#L11183
@@ -871,7 +881,6 @@ impl Context {
         self.prev_item_data.id = id;
         self.prev_item_data.rect = rect;
 
-
         let Some(crect) = rect.clip(clip_rect) else {
             self.prev_item_data.is_hidden = true;
             return rect;
@@ -888,8 +897,6 @@ impl Context {
                 }
             });
         }
-
-
 
         rect
     }
@@ -914,7 +921,7 @@ impl Context {
         assert!(self.prev_item_data.id == id);
         // let p = self.get_current_panel();
         if self.prev_item_data.is_hidden && self.active_id != id {
-            return Signal::NONE
+            return Signal::NONE;
         }
 
         let clip_rect = self.prev_item_data.clip_rect;
@@ -942,6 +949,14 @@ impl Context {
         let mut p = Panel::new(name);
         let id = p.id;
         p.frame_created = self.frame_count;
+
+        if self.next.initial_width.is_finite() {
+            p.size.x = self.next.initial_width;
+        }
+        if self.next.initial_height.is_finite() {
+            p.size.y = self.next.initial_height;
+        }
+
         self.panels.insert(id, p);
         id
     }
@@ -976,7 +991,7 @@ impl Context {
     // f(prev_size, full_size, content_size)
     pub fn set_current_panel_max_size(&mut self, f: impl Fn(Vec2, Vec2, Vec2) -> Vec2) {
         let p = &mut self.panels[self.current_panel_id];
-        if p.explicit_size.is_some() {
+        if p.explicit_size.is_finite() {
             log::warn!("set_current_panel_max_size with also explicit size");
         }
         p.max_size = f(p.size, p.full_size, p.full_content_size);
@@ -984,7 +999,7 @@ impl Context {
 
     pub fn set_current_panel_min_size(&mut self, f: impl Fn(Vec2, Vec2, Vec2) -> Vec2) {
         let p = &mut self.panels[self.current_panel_id];
-        if p.explicit_size.is_some() {
+        if p.explicit_size.is_finite() {
             log::warn!("set_current_panel_min_size with also explicit size");
         }
         p.min_size = f(p.size, p.full_size, p.full_content_size);
@@ -1028,9 +1043,9 @@ impl Context {
         }
 
         // if !self.window.is_decorated() {
-        self.next.pos = Some(Vec2::ZERO);
+        self.next.pos = Vec2::ZERO;
         let win_size = self.window.window_size();
-        self.next.size = Some(win_size);
+        self.next.size = win_size;
         // TODO
         // self.window
         match self.cursor_icon {
@@ -1048,7 +1063,7 @@ impl Context {
             self.root_panel_titlebar_height = self.style.titlebar_height();
         }
 
-        self.begin_ex("#ROOT_PANEL", flags);
+        self.begin_ex("##ROOT", flags);
         self.root_panel_id = self.current_panel_id;
         // }
 
@@ -1085,7 +1100,9 @@ impl Context {
 
     pub fn debug_window(&mut self) {
         use crate::ui_items::ui_text;
-        self.begin("#DEBUG");
+
+        self.next.initial_width = 450.0;
+        self.begin("Debug##DEBUG");
 
         let hot_name = self.get_panel_name_with_id(self.prev_hot_panel_id);
         let active_name = self.get_panel_name_with_id(self.prev_active_panel_id);
@@ -1102,7 +1119,7 @@ impl Context {
         let dt = (now - self.prev_frame_time).as_secs_f32();
         let fps = 1.0 / dt;
         self.prev_frame_time = now;
-        ui_text!(self: "dt: {:0.3?}, fps: {fps:0.1?}", dt * 1000.0);
+        ui_text!(self: "dt: {:0.3?}\t, fps: {fps:0.1?}", dt * 1000.0);
 
         // self.pop_style();
 
@@ -1123,14 +1140,15 @@ impl Context {
 
         if self.checkbox_intern("show font atlas") {
             let avail = self.available_content().min(Vec2::splat(800.0));
-            let uv_min = self.glyph_cache.min_alloc_uv;
-            let uv_max = self.glyph_cache.max_alloc_uv;
+            let uv_min = self.glyph_cache.borrow().min_alloc_uv;
+            let uv_max = self.glyph_cache.borrow().max_alloc_uv;
             let size = uv_max - uv_min;
             let scale = (avail.x / size.x).min(avail.y / size.y);
             let fitted_size = size * scale;
-            self.image(fitted_size, self.glyph_cache.min_alloc_uv, self.glyph_cache.max_alloc_uv, 1);
+            self.image(fitted_size, uv_min, uv_max, 1);
+        }
 
-        } 
+        self.separator_h(4.0);
 
         let mut v = self.circle_max_err;
         self.slider_f32("resolution", 0.0, 5.0, &mut v);
@@ -1143,27 +1161,33 @@ impl Context {
         let mut v = self.style.spacing_v();
         self.slider_f32("spacing v", 0.0, 30.0, &mut v);
         self.style.set_var(StyleVar::SpacingV(v));
-        
+
         let mut v = self.style.line_height();
         self.slider_f32("line height", 0.0, 30.0, &mut v);
         self.style.set_var(StyleVar::LineHeight(v));
 
+        // TODO[NOTE]: not enough space in the font atlas
+        // let mut v = self.style.text_size();
+        // self.slider_f32("text height", 0.0, 30.0, &mut v);
+        // self.style.set_var(StyleVar::TextSize(v));
+
         let mut v = self.style.btn_roundness();
-        self.slider_f32("button corners", 0.0, 1.0, &mut v);
+        self.slider_f32("button corners", 0.0, 0.5, &mut v);
         self.style.set_var(StyleVar::BtnRoundness(v));
 
         let mut v = self.style.panel_corner_radius();
         self.slider_f32("panel corners", 0.0, 100.0, &mut v);
         self.style.set_var(StyleVar::PanelCornerRadius(v));
 
-
         self.end();
     }
 
     pub fn end_frame(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self.mouse.pressed(MouseBtn::Left)
-            && !self.mouse.dragging(MouseBtn::Left) && !self.expect_drag
-            && self.panel_action.is_none() && self.hot_id != self.active_id
+            && !self.mouse.dragging(MouseBtn::Left)
+            && !self.expect_drag
+            && self.panel_action.is_none()
+            && self.hot_id != self.active_id
         {
             let prev = self.active_id;
             self.active_id = self.hot_id;
@@ -1182,7 +1206,7 @@ impl Context {
         self.prev_hot_id = self.hot_id;
         self.prev_active_id = self.active_id;
 
-        self.end_assert(Some("#ROOT_PANEL"));
+        self.end_assert(Some("##ROOT"));
 
         if !self.draw_wireframe {
             self.build_draw_data();
@@ -1213,18 +1237,27 @@ impl Context {
         }
     }
 
-    pub fn shape_text(&mut self, text: &str, font_size: f32) -> ShapedText {
-        let itm = TextItem::new(text.into(), font_size, 1.0, "Rubik");
-        let shaped_text = if !self.text_item_cache.contains_key(&itm) {
+    pub fn shape_text(&self, text: &str, font_size: f32) -> ShapedText {
+        let text = match text.find("##") {
+            Some(idx) => text[..idx].to_string(),
+            None => text.to_string(),
+        };
+
+        let itm = TextItem::new(text, font_size, 1.0, "Rubik");
+        let mut text_cache = self.text_item_cache.borrow_mut();
+        let mut glyph_cache = self.glyph_cache.borrow_mut();
+        let mut font_table = self.font_table.borrow_mut();
+
+        let shaped_text = if !text_cache.contains_key(&itm) {
             let shaped_text = shape_text_item(
                 itm.clone(),
-                &mut self.font_table,
-                &mut self.glyph_cache,
+                &mut font_table,
+                &mut glyph_cache,
                 &self.draw.wgpu,
             );
-            self.text_item_cache.entry(itm).or_insert(shaped_text)
+            text_cache.entry(itm).or_insert(shaped_text)
         } else {
-            self.text_item_cache.get(&itm).unwrap()
+            text_cache.get(&itm).unwrap()
         };
         shaped_text.clone()
     }
@@ -1245,26 +1278,44 @@ impl Context {
 
     pub fn upload_draw_data(&mut self) {
         let draw_buff = &mut self.draw.call_list;
-        if draw_buff.vtx_alloc.len() * std::mem::size_of::<Vertex>() > self.draw.gpu_vertices.size() as usize {
-            self.draw.gpu_vertices = self.draw.wgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("draw_list_vertex_buffer"),
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-                contents: bytemuck::cast_slice(&draw_buff.vtx_alloc),
-            });
+        if draw_buff.vtx_alloc.len() * std::mem::size_of::<Vertex>()
+            > self.draw.gpu_vertices.size() as usize
+        {
+            self.draw.gpu_vertices =
+                self.draw
+                    .wgpu
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("draw_list_vertex_buffer"),
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+                        contents: bytemuck::cast_slice(&draw_buff.vtx_alloc),
+                    });
         } else {
-            self.draw.wgpu.queue
-                .write_buffer(&self.draw.gpu_vertices, 0, bytemuck::cast_slice(&draw_buff.vtx_alloc));
+            self.draw.wgpu.queue.write_buffer(
+                &self.draw.gpu_vertices,
+                0,
+                bytemuck::cast_slice(&draw_buff.vtx_alloc),
+            );
         }
 
-        if self.draw.call_list.idx_alloc.len() * std::mem::size_of::<u32>() > self.draw.gpu_indices.size() as usize {
-            self.draw.gpu_indices = self.draw.wgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("draw_list_index_buffer"),
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
-                contents: bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
-            });
+        if self.draw.call_list.idx_alloc.len() * std::mem::size_of::<u32>()
+            > self.draw.gpu_indices.size() as usize
+        {
+            self.draw.gpu_indices =
+                self.draw
+                    .wgpu
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("draw_list_index_buffer"),
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
+                        contents: bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
+                    });
         } else {
-            self.draw.wgpu.queue
-                .write_buffer(&self.draw.gpu_indices, 0, bytemuck::cast_slice(&self.draw.call_list.idx_alloc));
+            self.draw.wgpu.queue.write_buffer(
+                &self.draw.gpu_indices,
+                0,
+                bytemuck::cast_slice(&self.draw.call_list.idx_alloc),
+            );
         }
     }
 
@@ -1291,7 +1342,7 @@ impl Context {
 
                 if cmd.clip_rect_used {
                     draw_buff.set_clip_rect(cmd.clip_rect);
-                } else if  !draw_buff.current_clip_rect().contains_rect(clip) {
+                } else if !draw_buff.current_clip_rect().contains_rect(clip) {
                     draw_buff.set_clip_rect(Rect::from_min_size(Vec2::ZERO, self.draw.screen_size));
                 }
 
@@ -1334,12 +1385,7 @@ impl Context {
         }
         self.upload_draw_data();
     }
-
-
 }
-
-
-
 
 #[derive(Clone)]
 pub struct Panel {
@@ -1373,10 +1419,10 @@ pub struct Panel {
     /// computed based on cursor.content_start_pos and cursor.max_pos
     pub full_content_size: Vec2,
 
-    pub explicit_size: Option<Vec2>,
+    pub explicit_size: Vec2,
 
     pub outline_offset: f32,
-    
+
     pub min_size: Vec2,
     pub max_size: Vec2,
 
@@ -1395,6 +1441,7 @@ pub struct Panel {
     pub id_stack: RefCell<Vec<Id>>,
     pub cursor: RefCell<Cursor>,
 }
+
 
 impl fmt::Debug for Panel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1429,7 +1476,7 @@ impl Panel {
 
             full_content_size: Vec2::ZERO,
             full_size: Vec2::ZERO,
-            explicit_size: None,
+            explicit_size: Vec2::NAN,
             outline_offset: 0.0,
             draw_order: 0,
             // bg_color: RGBA::ZERO,
@@ -1572,6 +1619,21 @@ impl Panel {
 id_type!(Id);
 id_type!(TextureId);
 
+
+impl Id {
+    pub fn from_str(str: &str) -> Id {
+        use hash::{Hash, Hasher};
+        let str = match str.find("##") {
+            Some(idx) => &str[idx..],
+            None => &str,
+        };
+
+        let mut hasher = ahash::AHasher::default();
+        str.hash(&mut hasher);
+        Id(hasher.finish())
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Cursor {
     pub pos: Vec2,
@@ -1589,7 +1651,6 @@ pub struct Outline {
     pub place: OutlinePlacement,
     pub col: RGBA,
 }
-
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum OutlinePlacement {
@@ -1709,10 +1770,14 @@ impl StyleTable {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct NextPanelData {
-    pub pos: Option<Vec2>,
+    pub initial_width: f32,
+    pub initial_height: f32,
+    pub initial_pos: Vec2,
+
+    pub pos: Vec2,
     pub placement: PanelPlacement,
     pub layout: Layout,
-    pub size: Option<Vec2>,
+    pub size: Vec2,
     pub min_size: Vec2,
     pub max_size: Vec2,
     pub content_size: Option<Vec2>,
@@ -1727,10 +1792,14 @@ impl Default for NextPanelData {
 impl NextPanelData {
     pub fn new() -> Self {
         Self {
-            pos: None,
+            initial_width: f32::NAN,
+            initial_height: f32::NAN,
+            initial_pos: Vec2::NAN,
+
+            pos: Vec2::NAN,
             placement: PanelPlacement::TopLeft,
             layout: Layout::Vertical,
-            size: None,
+            size: Vec2::NAN,
             // set both to infinity as default
             min_size: Vec2::ZERO,
             max_size: Vec2::INFINITY,
@@ -2023,7 +2092,6 @@ impl fmt::Debug for DrawList {
 
 impl Default for DrawList {
     fn default() -> Self {
-
         Self {
             vtx_buffer: vec![],
             idx_buffer: vec![],
@@ -2037,13 +2105,11 @@ impl Default for DrawList {
     }
 }
 
-
 fn calc_circle_segment_count(rad: f32, max_err: f32) -> u8 {
     use std::f32::consts::PI;
     let tmp = (PI / (1.0 - rad.min(max_err) / rad).cos()).ceil() as u32;
     tmp.clamp(4, 512) as u8
 }
-
 
 impl DrawList {
     pub fn new() -> Self {
@@ -2184,22 +2250,23 @@ impl DrawList {
         }
     }
 
-
     #[inline]
     pub fn push_clipped_vtx_idx(&mut self, vtx: &[Vertex], idx: &[u32]) {
         let cmd = self.current_draw_cmd();
         let base = cmd.vtx_count as u32;
         let clip = self.current_clip_rect();
 
-        fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+        fn lerp(a: f32, b: f32, t: f32) -> f32 {
+            a + (b - a) * t
+        }
 
         fn interp_vertex(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
             let mut out = a.clone();
             out.pos.x = lerp(a.pos.x, b.pos.x, t);
             out.pos.y = lerp(a.pos.y, b.pos.y, t);
-            out.uv.x  = lerp(a.uv.x,  b.uv.x,  t);
-            out.uv.y  = lerp(a.uv.y,  b.uv.y,  t);
-            out.col   = a.col.lerp(b.col, t);
+            out.uv.x = lerp(a.uv.x, b.uv.x, t);
+            out.uv.y = lerp(a.uv.y, b.uv.y, t);
+            out.col = a.col.lerp(b.col, t);
             out
         }
 
@@ -2221,8 +2288,8 @@ impl DrawList {
             // trivial reject
             if (v0.pos.x < clip.min.x && v1.pos.x < clip.min.x && v2.pos.x < clip.min.x)
                 || (v0.pos.x > clip.max.x && v1.pos.x > clip.max.x && v2.pos.x > clip.max.x)
-                    || (v0.pos.y < clip.min.y && v1.pos.y < clip.min.y && v2.pos.y < clip.min.y)
-                    || (v0.pos.y > clip.max.y && v1.pos.y > clip.max.y && v2.pos.y > clip.max.y)
+                || (v0.pos.y < clip.min.y && v1.pos.y < clip.min.y && v2.pos.y < clip.min.y)
+                || (v0.pos.y > clip.max.y && v1.pos.y > clip.max.y && v2.pos.y > clip.max.y)
             {
                 continue;
             }
@@ -2263,40 +2330,68 @@ impl DrawList {
                 |p: &Vertex| p.pos.x >= clip.min.x,
                 |a: &Vertex, b: &Vertex| {
                     let dx = b.pos.x - a.pos.x;
-                    if dx.abs() < 1e-6 { 0.0 } else { (clip.min.x - a.pos.x) / dx }.clamp(0.0, 1.0)
+                    if dx.abs() < 1e-6 {
+                        0.0
+                    } else {
+                        (clip.min.x - a.pos.x) / dx
+                    }
+                    .clamp(0.0, 1.0)
                 }
             );
-            if poly.len() < 3 { continue; }
+            if poly.len() < 3 {
+                continue;
+            }
 
             // right : x <= clip.max.x
             clip_edge!(
                 |p: &Vertex| p.pos.x <= clip.max.x,
                 |a: &Vertex, b: &Vertex| {
                     let dx = b.pos.x - a.pos.x;
-                    if dx.abs() < 1e-6 { 0.0 } else { (clip.max.x - a.pos.x) / dx }.clamp(0.0, 1.0)
+                    if dx.abs() < 1e-6 {
+                        0.0
+                    } else {
+                        (clip.max.x - a.pos.x) / dx
+                    }
+                    .clamp(0.0, 1.0)
                 }
             );
-            if poly.len() < 3 { continue; }
+            if poly.len() < 3 {
+                continue;
+            }
 
             // top   : y >= clip.min.y
             clip_edge!(
                 |p: &Vertex| p.pos.y >= clip.min.y,
                 |a: &Vertex, b: &Vertex| {
                     let dy = b.pos.y - a.pos.y;
-                    if dy.abs() < 1e-6 { 0.0 } else { (clip.min.y - a.pos.y) / dy }.clamp(0.0, 1.0)
+                    if dy.abs() < 1e-6 {
+                        0.0
+                    } else {
+                        (clip.min.y - a.pos.y) / dy
+                    }
+                    .clamp(0.0, 1.0)
                 }
             );
-            if poly.len() < 3 { continue; }
+            if poly.len() < 3 {
+                continue;
+            }
 
             // bottom: y <= clip.max.y
             clip_edge!(
                 |p: &Vertex| p.pos.y <= clip.max.y,
                 |a: &Vertex, b: &Vertex| {
                     let dy = b.pos.y - a.pos.y;
-                    if dy.abs() < 1e-6 { 0.0 } else { (clip.max.y - a.pos.y) / dy }.clamp(0.0, 1.0)
+                    if dy.abs() < 1e-6 {
+                        0.0
+                    } else {
+                        (clip.max.y - a.pos.y) / dy
+                    }
+                    .clamp(0.0, 1.0)
                 }
             );
-            if poly.len() < 3 { continue; }
+            if poly.len() < 3 {
+                continue;
+            }
 
             let start = out_vtxs.len() as u32;
             out_vtxs.extend_from_slice(&poly);
@@ -2321,7 +2416,6 @@ impl DrawList {
         cmd.vtx_count += out_vtxs.len();
         cmd.idx_count += out_idx.len();
     }
-
 
     #[inline]
     pub fn push_clipped_vtx_idx2(&mut self, vtx: &[Vertex], idx: &[u32]) {
@@ -2595,9 +2689,7 @@ impl DrawList {
         let outline_min = min - Vec2::splat(outset);
         let outline_max = max + Vec2::splat(outset);
 
-        if let Some(outline_clip) =
-            Rect::from_min_max(outline_min, outline_max).clip(clip)
-        {
+        if let Some(outline_clip) = Rect::from_min_max(outline_min, outline_max).clip(clip) {
             let outline_uvs = compute_proportional_uvs(
                 outline_min,
                 outline_max,
@@ -2649,7 +2741,14 @@ impl DrawList {
         let clipped_uvs = compute_clipped_uvs(min, max, crect.min, crect.max, uv_min, uv_max);
 
         let start = self.vtx_buffer.len();
-        self.push_rect_vertices(crect.min, crect.max, clipped_uvs.0, clipped_uvs.1, tint, tex_id);
+        self.push_rect_vertices(
+            crect.min,
+            crect.max,
+            clipped_uvs.0,
+            clipped_uvs.1,
+            tint,
+            tex_id,
+        );
 
         if tex_id != 0 {
             let end = start + 4;
@@ -2678,9 +2777,7 @@ impl DrawList {
         let (vtx, idx) = tessellate_line(&pts, outline.col, outline.width, true);
         self.push_vtx_idx(&vtx, &idx);
     }
-
 }
-
 
 fn compute_clipped_uvs(
     omin: Vec2,
@@ -3254,7 +3351,8 @@ impl GlyphCache {
         });
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let alloc = etagere::AtlasAllocator::new(etagere::Size::new(size as i32 + 3, size as i32 + 3));
+        let alloc =
+            etagere::AtlasAllocator::new(etagere::Size::new(size as i32 + 3, size as i32 + 3));
         let texture = gpu::Texture::new(texture, texture_view);
 
         Self {
@@ -3474,7 +3572,6 @@ impl RenderPassHandle for MergedDrawLists {
 
         let bind_group = build_bind_group(global_uniform, self.glyph_texture.view(), wgpu);
 
-
         // if self.call_list.vtx_alloc.len() * std::mem::size_of::<Vertex>() >= self.gpu_vertices.size() as usize {
         //     self.gpu_vertices = wgpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         //         label: Some("draw_list_vertex_buffer"),
@@ -3499,7 +3596,6 @@ impl RenderPassHandle for MergedDrawLists {
 
         // let (verts, indxs, clip) = self.call_list.get_draw_call_data(i).unwrap();
         for call in &self.call_list.calls {
-
             let clip = call.clip_rect;
 
             rpass.set_bind_group(0, &bind_group, &[]);
@@ -3519,7 +3615,7 @@ impl RenderPassHandle for MergedDrawLists {
             let idx_offset = call.idx_ptr as u32;
             let vtx_offset = call.vtx_ptr as i32;
             let n_idx = call.n_idx as u32;
-            rpass.draw_indexed(idx_offset..idx_offset+n_idx, vtx_offset, 0..1);
+            rpass.draw_indexed(idx_offset..idx_offset + n_idx, vtx_offset, 0..1);
         }
     }
 

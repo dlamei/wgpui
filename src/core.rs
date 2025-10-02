@@ -860,13 +860,6 @@ macro_rules! id_type {
         impl $id_ty {
             pub const NULL: $id_ty = $id_ty(0);
 
-            pub fn from_str(s: &str) -> Self {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = ahash::AHasher::default();
-                s.hash(&mut hasher);
-                Self(hasher.finish().max(1))
-            }
-
             pub fn is_null(&self) -> bool {
                 self.0 == 0
             }
@@ -1068,7 +1061,6 @@ macro_rules! stacked_fields_struct {
 }
 pub(crate) use stacked_fields_struct;
 
-
 pub struct DataMap<K> {
     data: HashMap<K, Box<dyn std::any::Any>>,
 }
@@ -1092,22 +1084,20 @@ impl<K: Eq + hash::Hash> DataMap<K> {
         self.data.insert(key, Box::new(value));
     }
 
-    pub fn get_or_insert<T: 'static>(&mut self, key: K, value: T) -> &mut T 
+    pub fn get_or_insert<T: 'static>(&mut self, key: K, value: T) -> &mut T
     where
         K: Clone,
     {
-        self.data.entry(key)
+        self.data
+            .entry(key)
             .or_insert_with(|| Box::new(value))
             .downcast_mut::<T>()
             .expect("Type mismatch in TypeMap")
     }
 
-    pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(
-        &mut self, 
-        key: K, 
-        f: F
-    ) -> &mut T {
-        self.data.entry(key)
+    pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(&mut self, key: K, f: F) -> &mut T {
+        self.data
+            .entry(key)
             .or_insert_with(|| Box::new(f()))
             .downcast_mut::<T>()
             .expect("Type mismatch in TypeMap")
@@ -1131,7 +1121,6 @@ impl<K: Eq + hash::Hash> Default for DataMap<K> {
         Self::new()
     }
 }
-
 
 // Example usage and tests
 #[cfg(test)]

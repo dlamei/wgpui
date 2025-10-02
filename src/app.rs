@@ -297,7 +297,7 @@ impl App {
             WE::RedrawRequested => {
                 if id == self.main_window {
                     self.on_update(event_loop);
-                    let pid = self.ui.get_panel_with_name("#ROOT_PANEL");
+                    let pid = self.ui.get_root_panel();
                     if self.ui.close_pressed {
                         event_loop.exit();
                     }
@@ -339,7 +339,7 @@ impl App {
         ui.end();
 
         for i in 0..4 {
-            ui.begin(format!("test: {i}"));
+            ui.begin(format!("test window##{i}"));
             ui.button("test button");
             ui.same_line();
             ui.checkbox_intern("checkbox");

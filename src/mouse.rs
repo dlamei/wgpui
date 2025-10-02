@@ -400,8 +400,8 @@ impl CursorIcon {
 
 impl From<CursorIcon> for winit::window::Cursor {
     fn from(value: CursorIcon) -> Self {
-        use winit::window::CursorIcon as WCI;
         use CursorIcon as CI;
+        use winit::window::CursorIcon as WCI;
         match value {
             CI::Default => WCI::Default,
             CI::Pointer => WCI::Pointer,

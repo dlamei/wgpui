@@ -1,7 +1,9 @@
 use glam::Vec2;
 
 use crate::{
-    core::RGBA, mouse::{CursorIcon, MouseBtn}, ui::{self, CornerRadii}
+    core::RGBA,
+    mouse::{CursorIcon, MouseBtn},
+    ui::{self, CornerRadii, Id},
 };
 
 macro_rules! ui_text {
@@ -12,7 +14,6 @@ macro_rules! ui_text {
 pub(crate) use ui_text;
 
 impl ui::Context {
-
     pub fn image(&mut self, size: Vec2, uv_min: Vec2, uv_max: Vec2, tex_id: u32) {
         let id = self.gen_id(tex_id);
         let rect = self.place_item(id, size);
@@ -23,7 +24,6 @@ impl ui::Context {
                 .add()
         })
     }
-
 
     pub fn button(&mut self, label: &str) -> bool {
         let id = self.gen_id(label);
@@ -111,7 +111,10 @@ impl ui::Context {
                 rail_min.x + height * 0.5
             };
             let knob_center = Vec2::new(knob_x, rail_min.y + height * 0.5);
-            list.circle(knob_center, knob_r).corners(CornerRadii::all(height * 0.8 * 0.3)).fill(knob_col).add();
+            list.circle(knob_center, knob_r)
+                .corners(CornerRadii::all(height * 0.8 * 0.3))
+                .fill(knob_col)
+                .add();
         });
 
         self.same_line();
@@ -119,7 +122,6 @@ impl ui::Context {
 
         *b
     }
-
 
     pub fn checkbox(&mut self, label: &str, b: &mut bool) -> bool {
         let id = self.gen_id(label);
@@ -166,9 +168,17 @@ impl ui::Context {
         *b
     }
 
+    pub fn separator_h(&mut self, thickness: f32) {
+        let width = self.available_content().x;
+        let rect = self.place_item(Id::NULL, Vec2::new(width, thickness));
+        let col = RGBA::hex("#282c34");
+
+        self.draw(|list| list.rect(rect.min, rect.max).fill(col).add());
+    }
+
     pub fn slider_f32(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
         let height = self.style.line_height();
-        let width = self.available_content().x / 3.0;
+        let width = self.available_content().x / 2.5;
         let size = Vec2::new(width, height);
 
         let id = self.gen_id(label);
@@ -180,7 +190,11 @@ impl ui::Context {
         let usable_width = (rect.width() - knob_diam).max(0.0);
 
         if sig.pressed() || sig.dragging() {
-            let denom = if usable_width <= 0.0 { 1.0 } else { usable_width };
+            let denom = if usable_width <= 0.0 {
+                1.0
+            } else {
+                usable_width
+            };
             let t = ((self.mouse.pos.x - (rect.min.x + knob_r)) / denom).clamp(0.0, 1.0);
             if (max - min).abs() > std::f32::EPSILON {
                 *val = min + t * (max - min);
@@ -209,7 +223,11 @@ impl ui::Context {
             self.expect_drag = true;
         }
 
-        let mut rail_col = if sig.hovering() { self.style.btn_hover() } else { self.style.btn_default() };
+        let mut rail_col = if sig.hovering() {
+            self.style.btn_hover()
+        } else {
+            self.style.btn_default()
+        };
         let mut knob_col = if sig.dragging() {
             self.style.btn_press()
         } else {
@@ -232,12 +250,11 @@ impl ui::Context {
                 .corners(CornerRadii::all(height * 0.8 * 0.3))
                 .fill(knob_col)
                 .add();
-            });
+        });
 
         self.same_line();
         self.text(label);
     }
-
 
     pub fn slider_f322(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
         let height = self.style.line_height();
@@ -271,7 +288,7 @@ impl ui::Context {
                 .corners(CornerRadii::all(height * 0.3))
                 .fill(fill_col)
                 .add();
-            });
+        });
 
         self.same_line();
         self.text(label);
@@ -295,7 +312,6 @@ impl ui::Context {
 
         self.draw(|list| list.add_text(rect.min, &shape, self.style.text_col()));
     }
-
 
     pub fn checkbox_intern(&mut self, label: &str) -> bool {
         let id = self.gen_id(label);
