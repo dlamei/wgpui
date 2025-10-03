@@ -173,125 +173,118 @@ impl ui::Context {
     pub fn separator_h(&mut self, thickness: f32) {
         let width = self.available_content().x;
         let rect = self.place_item(Id::NULL, Vec2::new(width, thickness));
-        let col = RGBA::hex("#282c34");
+        let col = self.style.panel_dark_bg();
 
         self.draw(|list| list.rect(rect.min, rect.max).fill(col).add());
+    }
+
+    pub fn scrollbar_v(&mut self, content_height: f32, view_height: f32, offset: &mut f32) {
+        let bar_width = self.style.line_height() * 0.6;
+        let height = view_height;
+        let rect = self.place_item(self.gen_id("scrollbar_v"), Vec2::new(bar_width, height));
+        let sig = self.register_item(self.gen_id("scrollbar_v"));
+
+        let rail_col = self.style.btn_default();
+        let knob_col = self.style.btn_press();
+        let hover_col = self.style.btn_hover();
+
+        let knob_h = if content_height <= 0.0 {
+            height
+        } else {
+            (view_height / content_height * height).clamp(self.style.line_height(), height)
+        };
+        let max_offset = (content_height - view_height).max(0.0);
+        let ratio = if max_offset <= 0.0 {
+            0.0
+        } else {
+            (*offset / max_offset).clamp(0.0, 1.0)
+        };
+        let knob_min_y = rect.min.y + (height - knob_h) * ratio;
+        let knob_max_y = knob_min_y + knob_h;
+        let knob_min = Vec2::new(rect.min.x, knob_min_y);
+        let knob_max = Vec2::new(rect.max.x, knob_max_y);
+
+        if sig.pressed() || sig.dragging() {
+            let t = ((self.mouse.pos.y - rect.min.y - knob_h * 0.5) / (height - knob_h))
+                .clamp(0.0, 1.0);
+            *offset = t * max_offset;
+        }
+
+        if sig.hovering() {
+            self.set_cursor_icon(CursorIcon::MoveV);
+        }
+
+        let knob_final_col = if sig.hovering() || sig.dragging() {
+            hover_col
+        } else {
+            knob_col
+        };
+
+        self.draw(|list| {
+            list.rect(rect.min, rect.max)
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
+                .fill(rail_col)
+                .add();
+            list.rect(knob_min, knob_max)
+                .corners(CornerRadii::all(self.style.btn_corner_radius()))
+                .fill(knob_final_col)
+                .add();
+        });
     }
 
     pub fn slider_f32(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
         let height = self.style.line_height();
         let width = self.available_content().x / 2.5;
-        let size = Vec2::new(width, height);
+        let rect = self.place_item(self.gen_id(label), Vec2::new(width, height));
+        let sig = self.register_item(self.gen_id(label));
 
-        let id = self.gen_id(label);
-        let rect = self.place_item(id, size);
-        let sig = self.register_item(id);
-
-        let knob_diam = height * 0.8;
-        let knob_r = knob_diam * 0.5;
-        let usable_width = (rect.width() - knob_diam).max(0.0);
+        let knob_size = height * 0.8;
+        let rail_pad = height - knob_size;
+        let usable_width = (rect.width() - knob_size - rail_pad).max(0.0);
 
         if sig.pressed() || sig.dragging() {
-            let denom = if usable_width <= 0.0 {
-                1.0
-            } else {
-                usable_width
-            };
-            let t = ((self.mouse.pos.x - (rect.min.x + knob_r)) / denom).clamp(0.0, 1.0);
-            if (max - min).abs() > std::f32::EPSILON {
+            let denom = usable_width.max(1.0);
+            let t = ((self.mouse.pos.x - (rect.min.x + knob_size)) / denom).clamp(0.0, 1.0);
+            if (max - min).abs() > f32::EPSILON {
                 *val = min + t * (max - min);
             }
         }
 
-        let ratio = if (max - min).abs() < std::f32::EPSILON {
+        let ratio = if (max - min).abs() < f32::EPSILON {
             0.0
         } else {
             ((*val - min) / (max - min)).clamp(0.0, 1.0)
         };
 
-        let knob_x = rect.min.x + knob_r + ratio * usable_width;
-        let knob_center = Vec2::new(knob_x, rect.min.y + height * 0.5);
-
-        let mouse = self.mouse.pos;
-        let dx = mouse.x - knob_center.x;
-        let dy = mouse.y - knob_center.y;
-        let over_knob = (dx * dx + dy * dy) <= (knob_r * knob_r);
+        let mut knob_min = rect.min + Vec2::splat(rail_pad / 2.0);
+        knob_min.x += ratio * usable_width;
+        let knob_max = knob_min + Vec2::splat(knob_size);
 
         if sig.hovering() {
             self.set_cursor_icon(CursorIcon::MoveH);
         }
-
         if sig.pressed() && !sig.dragging() {
             self.expect_drag = true;
         }
 
-        let mut rail_col = if sig.hovering() {
-            self.style.btn_hover()
+        let (mut rail_col, mut knob_col) = if sig.dragging() {
+            (self.style.btn_press(), self.style.btn_hover())
+        } else if sig.hovering() {
+            (self.style.btn_hover(), self.style.btn_press())
         } else {
-            self.style.btn_default()
+            (self.style.btn_default(), self.style.btn_press())
         };
-        let mut knob_col = if sig.dragging() {
-            self.style.btn_press()
-        } else {
-            self.style.btn_press()
-        };
-
-        if sig.dragging() {
-            std::mem::swap(&mut rail_col, &mut knob_col);
-        }
 
         self.draw(|list| {
-            // rail (no left->right fill; knob indicates value)
             list.rect(rect.min, rect.max)
-                // .corners(CornerRadii::all(height * 0.3))
                 .corners(CornerRadii::all(self.style.btn_corner_radius()))
                 .fill(rail_col)
                 .add();
 
-            // knob
-            list.circle(knob_center, knob_r)
-                // .corners(CornerRadii::all(height * 0.8 * 0.3))
+            list.rect(knob_min, knob_max)
                 .corners(CornerRadii::all(self.style.btn_corner_radius()))
                 .fill(knob_col)
-                .add();
-        });
-
-        self.same_line();
-        self.text(label);
-    }
-
-    pub fn slider_f322(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
-        let height = self.style.line_height();
-        let width = height * 6.0;
-        let size = Vec2::new(width, height);
-
-        let id = self.gen_id(label);
-        let rect = self.place_item(id, size);
-        let sig = self.register_item(id);
-
-        let ratio = ((*val - min) / (max - min)).clamp(0.0, 1.0);
-        if sig.dragging() {
-            let t = ((self.mouse.pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
-            *val = min + t * (max - min);
-        }
-
-        if sig.dragging() || sig.hovering() {
-            self.set_cursor_icon(CursorIcon::MoveH)
-        }
-
-        let bg_col = self.style.btn_default();
-        let fill_col = self.style.btn_press();
-
-        self.draw(|list| {
-            list.rect(rect.min, rect.max)
-                .corners(CornerRadii::all(height * 0.3))
-                .fill(bg_col)
-                .add();
-            let filled = Vec2::new(rect.min.x + rect.width() * ratio, rect.max.y);
-            list.rect(rect.min, filled)
-                .corners(CornerRadii::all(height * 0.3))
-                .fill(fill_col)
-                .add();
+                .add()
         });
 
         self.same_line();
@@ -339,5 +332,18 @@ impl ui::Context {
         self.slider_f32(label, min, max, &mut val);
         self.widget_data.insert(id, val);
         val
+    }
+
+    pub fn scrollbar_v_intern(
+        &mut self,
+        label: &str,
+        content_height: f32,
+        view_height: f32,
+    ) -> f32 {
+        let id = self.gen_id(label);
+        let mut offset = *self.widget_data.get_or_insert(id, 0.0);
+        self.scrollbar_v(content_height, view_height, &mut offset);
+        self.widget_data.insert(id, offset);
+        offset
     }
 }

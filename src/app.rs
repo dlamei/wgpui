@@ -57,7 +57,7 @@ impl Default for AppSetup {
 }
 
 fn load_window_icon() -> winit::window::Icon {
-    let icon_bytes = include_bytes!("../res/icon2.png");
+    let icon_bytes = include_bytes!("../res/icon.png");
     let img = image::load_from_memory(icon_bytes).unwrap().into_rgba8();
     let (width, height) = img.dimensions();
     let rgba = img.into_raw();
@@ -185,7 +185,7 @@ impl AppSetup {
                     let size = window.window_size();
                     *self = Self::Init(App::new(wgpu, window));
                     let app = self.init_unwrap();
-                    app.ui2
+                    app.ui
                         .resize_window(window_id, size.x as u32, size.y as u32);
                     return Some(self.init_unwrap());
                 }
@@ -274,6 +274,15 @@ impl App {
                 // self.ui.cursor_in_window = true;
             }
 
+            WE::MouseWheel { delta, .. } => {
+                use winit::event::MouseScrollDelta;
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => Vec2::new(x, y),
+                    MouseScrollDelta::PixelDelta(d) => Vec2::new(d.x as f32, d.y as f32),
+                };
+                self.ui.set_mouse_scroll(delta);
+            }
+
             WE::MouseInput { state, button, .. } => {
                 use winit::event::{ElementState, MouseButton};
                 let pressed = match state {
@@ -289,7 +298,7 @@ impl App {
                         self.ui.set_mouse_press(MouseBtn::Middle, pressed);
                     }
                     MouseButton::Right => {
-                        self.ui.set_mouse_press(MouseBtn::Left, pressed);
+                        self.ui.set_mouse_press(MouseBtn::Right, pressed);
                     }
                     _ => (),
                 }
