@@ -187,7 +187,7 @@ impl Context {
             cursor_icon: CursorIcon::Default,
             cursor_icon_changed: false,
             resize_threshold: 10.0,
-            scroll_speed: 20.0,
+            scroll_speed: 1.0,
             n_draw_calls: 0,
 
             glyph_cache: RefCell::new(glyph_cache),
@@ -904,7 +904,8 @@ impl Context {
     }
 
     pub fn update_panel_move(&mut self) {
-        // TODO[BUG]: start dragging titlebar over another panel titlebar
+        // TODO[BUG]: after drag quickly drag over another panel make the wrong panel move
+        // probably because of prev_active_panel_id and not current id
         if !self.prev_active_panel_id.is_null() {
             let p = &mut self.panels[self.prev_active_panel_id];
             if self.active_id == p.move_id && !p.move_id.is_null()

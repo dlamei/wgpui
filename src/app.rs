@@ -217,7 +217,7 @@ impl ApplicationHandler for AppSetup {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(app) = self.try_init() {
-            app.ui.window.request_redraw();
+            // app.ui.window.request_redraw();
         }
     }
 }
@@ -283,7 +283,7 @@ impl App {
             WE::MouseWheel { delta, .. } => {
                 use winit::event::MouseScrollDelta;
                 let delta = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => Vec2::new(x, y),
+                    MouseScrollDelta::LineDelta(x, y) => Vec2::new(x, y) * 20.0,
                     MouseScrollDelta::PixelDelta(d) => Vec2::new(d.x as f32, d.y as f32),
                 };
                 self.ui.set_mouse_scroll(delta);
