@@ -387,3 +387,30 @@ impl From<CursorIcon> for winit::window::Cursor {
         .into()
     }
 }
+
+pub struct Clipboard {
+    // pub repr: arboard::Clipboard,
+    pub repr: clipboard::ClipboardContext,
+}
+
+impl Clipboard {
+    pub fn new() -> Self {
+        let repr = clipboard::ClipboardProvider::new().unwrap();
+        Self { 
+            repr,
+        }
+    }
+
+    pub fn get_text(&mut self) -> Option<String> {
+        use clipboard::ClipboardProvider;
+        self.repr.get_contents().ok()
+        // self.repr.get_text().ok()
+    }
+
+    pub fn set_text(&mut self, text: &str) {
+        use clipboard::ClipboardProvider;
+        if let Err(e) = self.repr.set_contents(text.to_string()) {
+            log::warn!("{e}")
+        }
+    }
+}

@@ -8,11 +8,7 @@ use std::{
 use wgpu::util::DeviceExt;
 
 use crate::{
-    Vertex as VertexTyp,
-    core::{ArrVec, DataMap, Dir, HashMap, Instant, RGBA, id_type, stacked_fields_struct},
-    gpu::{self, RenderPassHandle, ShaderHandle, WGPU, WGPUHandle, Window, WindowId},
-    mouse::{CursorIcon, MouseBtn, MouseState},
-    rect::Rect,
+    core::{id_type, stacked_fields_struct, ArrVec, DataMap, Dir, HashMap, Instant, RGBA}, gpu::{self, RenderPassHandle, ShaderHandle, WGPUHandle, Window, WindowId, WGPU}, mouse::{Clipboard, CursorIcon, MouseBtn, MouseState}, rect::Rect, Vertex as VertexTyp
 };
 
 // TODO[NOTE]: framepadding style?
@@ -155,7 +151,7 @@ pub struct Context {
     pub window: Window,
     pub requested_windows: Vec<(Vec2, Vec2)>,
     pub ext_window: Option<Window>,
-    pub clipboard: arboard::Clipboard,
+    pub clipboard: Clipboard,
 }
 
 impl Context {
@@ -234,7 +230,7 @@ impl Context {
             window,
             requested_windows: Vec::new(),
             ext_window: None,
-            clipboard: arboard::Clipboard::new().unwrap(),
+            clipboard: Clipboard::new(),
         }
     }
 
@@ -315,13 +311,19 @@ impl Context {
                 input.backspace(&self.modifiers);
             }
             PhysicalKey::Code(KeyCode::KeyV) if ctrl => {
-                if let Ok(text) = self.clipboard.get_text() {
+                if let Some(text) = self.clipboard.get_text() {
                     input.paste(&text);
                 }
             }
             PhysicalKey::Code(KeyCode::KeyC) if ctrl => {
                 if let Some(text) = input.copy_selection() {
-                    let _ = self.clipboard.set_text(text);
+                    self.clipboard.set_text(&text);
+                }
+            }
+            PhysicalKey::Code(KeyCode::KeyX) if ctrl => {
+                if let Some(text) = input.copy_selection() {
+                    self.clipboard.set_text(&text);
+                    input.delete_selection();
                 }
             }
             PhysicalKey::Code(KeyCode::KeyA) if ctrl => {
@@ -2962,6 +2964,11 @@ impl TextInputState {
     pub fn delete(&mut self) {
         use ctext::{Action, Edit};
         self.edit.action(&mut self.fonts.sys(), Action::Delete);
+    }
+
+    pub fn delete_selection(&mut self) {
+        use ctext::Edit;
+        self.edit.delete_selection();
     }
 
     pub fn enter(&mut self) {
