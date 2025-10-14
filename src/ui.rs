@@ -148,7 +148,7 @@ pub struct Context {
     pub draw: MergedDrawLists,
     pub glyph_cache: RefCell<GlyphCache>,
     pub text_item_cache: RefCell<TextItemCache>,
-    pub font_table: RefCell<FontTable>,
+    pub font_table: FontTable,
     pub icon_uv: Rect,
 
     pub close_pressed: bool,
@@ -160,12 +160,7 @@ pub struct Context {
 
 impl Context {
     pub fn new(wgpu: WGPUHandle, window: Window) -> Self {
-        let mut glyph_cache = GlyphCache::new(&wgpu);
 
-        let icon_uv = {
-            let (w, h, data) = load_window_icon();
-            glyph_cache.alloc_data(w, h, &data, &wgpu).unwrap()
-        };
 
         let mut font_table = FontTable::new();
         font_table.load_font(
@@ -173,6 +168,12 @@ impl Context {
             include_bytes!("../res/Inter-VariableFont_opsz,wght.ttf").to_vec(),
         );
         font_table.load_font("Phosphor", include_bytes!("../res/Phosphor.ttf").to_vec());
+       
+        let mut glyph_cache = GlyphCache::new(&wgpu, font_table.clone());
+        let icon_uv = {
+            let (w, h, data) = load_window_icon();
+            glyph_cache.alloc_data(w, h, &data, &wgpu).unwrap()
+        };
 
         Self {
             panels: IdMap::new(),
@@ -226,7 +227,7 @@ impl Context {
 
             glyph_cache: RefCell::new(glyph_cache),
             text_item_cache: RefCell::new(TextItemCache::new()),
-            font_table: RefCell::new(font_table),
+            font_table,
             icon_uv,
 
             close_pressed: false,
@@ -295,17 +296,23 @@ impl Context {
         let ctrl = self.modifiers.control_key();
         let shift = self.modifiers.shift_key();
 
-        let sys = &mut self.font_table.borrow_mut().sys;
+        // let sys = &mut self.font_table.borrow_mut().sys;
 
         match key.physical_key {
             PhysicalKey::Code(KeyCode::ArrowRight) => {
-                input.move_cursor_right(&self.modifiers, sys);
+                input.move_cursor_right(&self.modifiers);
             }
             PhysicalKey::Code(KeyCode::ArrowLeft) => {
-                input.move_cursor_left(&self.modifiers, sys);
+                input.move_cursor_left(&self.modifiers);
+            }
+            PhysicalKey::Code(KeyCode::ArrowDown) => {
+                input.move_cursor_down(&self.modifiers);
+            }
+            PhysicalKey::Code(KeyCode::ArrowUp) => {
+                input.move_cursor_up(&self.modifiers);
             }
             PhysicalKey::Code(KeyCode::Backspace) => {
-                input.backspace(&self.modifiers, sys);
+                input.backspace(&self.modifiers);
             }
             PhysicalKey::Code(KeyCode::KeyV) if ctrl => {
                 if let Ok(text) = self.clipboard.get_text() {
@@ -320,8 +327,8 @@ impl Context {
             PhysicalKey::Code(KeyCode::KeyA) if ctrl => {
                 input.select_all();
             }
-            PhysicalKey::Code(KeyCode::Delete) => input.delete(&self.modifiers, sys),
-            PhysicalKey::Code(KeyCode::Enter) => input.enter(sys),
+            PhysicalKey::Code(KeyCode::Delete) => input.delete(),
+            PhysicalKey::Code(KeyCode::Enter) => input.enter(),
             _ => {
                 if let Some(text) = &key.text {
                     input.paste(&text);
@@ -777,7 +784,7 @@ impl Context {
         let title = p.name.clone();
 
         // draw titlebar background
-        let title_text = self.shape_text(&title, self.style.text_size());
+        let title_text = self.layout_text(&title, self.style.text_size());
         self.draw(|list| {
             list.rect(
                 panel_pos,
@@ -821,7 +828,7 @@ impl Context {
                 RGBA::WHITE
             };
 
-            let x_icon = self.shape_icon(PhosphorFont::X, self.style.text_size());
+            let x_icon = self.layout_icon(PhosphorFont::X, self.style.text_size());
             self.draw(|list| {
                 let pad = btn_size - x_icon.size();
                 let pos = btn_pos + pad / 2.0;
@@ -845,9 +852,9 @@ impl Context {
 
             self.draw(|list| {
                 let max_icon = if self.window.is_maximized() {
-                    self.shape_icon(PhosphorFont::MAXIMIZE_OFF, self.style.text_size())
+                    self.layout_icon(PhosphorFont::MAXIMIZE_OFF, self.style.text_size())
                 } else {
-                    self.shape_icon(PhosphorFont::MAXIMIZE, self.style.text_size())
+                    self.layout_icon(PhosphorFont::MAXIMIZE, self.style.text_size())
                 };
                 let pad = btn_size - max_icon.size();
                 let pos = btn_pos + pad / 2.0;
@@ -869,7 +876,7 @@ impl Context {
                 self.style.text_col()
             };
 
-            let min_icon = self.shape_icon(PhosphorFont::MINIMIZE, self.style.text_size());
+            let min_icon = self.layout_icon(PhosphorFont::MINIMIZE, self.style.text_size());
             self.draw(|list| {
                 let pad = btn_size - min_icon.size();
                 let pos = btn_pos + pad / 2.0;
@@ -1099,6 +1106,16 @@ impl Context {
                 sig |= Signal::PRESSED_MIDDLE;
             }
 
+            if self.mouse.double_pressed(Btn::Left) {
+                sig |= Signal::DOUBLE_PRESSED_LEFT;
+            }
+            if self.mouse.double_pressed(Btn::Right) {
+                sig |= Signal::DOUBLE_PRESSED_RIGHT;
+            }
+            if self.mouse.double_pressed(Btn::Middle) {
+                sig |= Signal::DOUBLE_PRESSED_MIDDLE;
+            }
+
             if self.mouse.double_clicked(Btn::Left) {
                 sig |= Signal::DOUBLE_CLICKED_LEFT;
             }
@@ -1107,6 +1124,16 @@ impl Context {
             }
             if self.mouse.double_clicked(Btn::Middle) {
                 sig |= Signal::DOUBLE_CLICKED_MIDDLE;
+            }
+
+            if self.mouse.triple_clicked(Btn::Left) {
+                sig |= Signal::TRIPLE_CLICKED_LEFT;
+            }
+            if self.mouse.triple_clicked(Btn::Right) {
+                sig |= Signal::TRIPLE_CLICKED_RIGHT;
+            }
+            if self.mouse.triple_clicked(Btn::Middle) {
+                sig |= Signal::TRIPLE_CLICKED_MIDDLE;
             }
 
             if self.mouse.released(Btn::Left) {
@@ -1157,10 +1184,6 @@ impl Context {
 
     pub fn get_current_panel(&self) -> &Panel {
         &self.panels[self.current_panel_id]
-    }
-
-    pub fn font_table(&mut self) -> &mut FontTable {
-        self.font_table.get_mut()
     }
 
     pub fn glyph_cache(&mut self) -> &mut GlyphCache {
@@ -1562,7 +1585,8 @@ impl Context {
 
         // self.separator_h(4.0);
 
-        self.text_input("the quick brown fox jumps over the lazy dog");
+        let multiline = self.checkbox_intern("multiline input (buggy)");
+        self.text_input_ex("this is a text input field", multiline);
 
         self.move_down(10.0);
         self.begin_tabbar("tabbar");
@@ -1744,7 +1768,7 @@ impl Context {
         });
     }
 
-    pub fn shape_text_with_font(
+    pub fn layout_text_with_font(
         &self,
         text: &str,
         font_size: f32,
@@ -1758,10 +1782,10 @@ impl Context {
         let itm = TextItem::new(text, font_size, 1.0, font);
         let mut text_cache = self.text_item_cache.borrow_mut();
         let mut glyph_cache = self.glyph_cache.borrow_mut();
-        let mut font_table = self.font_table.borrow_mut();
+        let mut font_table = self.font_table.clone();
 
         let shaped_text = if !text_cache.contains_key(&itm) {
-            let shaped_text = itm.shape(&mut font_table, &mut glyph_cache, &self.draw.wgpu);
+            let shaped_text = itm.layout(&mut font_table, &mut glyph_cache, &self.draw.wgpu);
             text_cache.entry(itm).or_insert(shaped_text)
         } else {
             text_cache.get(&itm).unwrap()
@@ -1769,16 +1793,16 @@ impl Context {
         shaped_text.clone()
     }
 
-    pub fn shape_text(&self, text: &str, font_size: f32) -> ShapedText {
-        self.shape_text_with_font(text, font_size, "Inter")
+    pub fn layout_text(&self, text: &str, font_size: f32) -> ShapedText {
+        self.layout_text_with_font(text, font_size, "Inter")
     }
 
-    pub fn shape_icon(&self, text: &str, font_size: f32) -> ShapedText {
-        self.shape_text_with_font(text, font_size, "Phosphor")
+    pub fn layout_icon(&self, text: &str, font_size: f32) -> ShapedText {
+        self.layout_text_with_font(text, font_size, "Phosphor")
     }
 
     pub fn draw_text(&mut self, text: &str, pos: Vec2) {
-        let shape = self.shape_text(text, 32.0);
+        let shape = self.layout_text(text, 32.0);
 
         for g in shape.glyphs.iter() {
             let min = g.meta.pos + pos;
@@ -2853,12 +2877,14 @@ pub struct TabItem {
 #[derive(Debug, Clone)]
 pub struct TextInputState {
     pub edit: ctext::Editor<'static>,
+    pub fonts: FontTable,
+    pub multiline: bool,
 }
 
 impl TextInputState {
-    pub fn new(fonts: &mut FontTable, text: TextItem) -> Self {
+    pub fn new(mut fonts: FontTable, text: TextItem, multiline: bool) -> Self {
         let mut buffer = ctext::Buffer::new(
-            &mut fonts.sys,
+            &mut fonts.sys(),
             ctext::Metrics {
                 font_size: text.font_size(),
                 line_height: text.scaled_line_height(),
@@ -2867,7 +2893,7 @@ impl TextInputState {
 
         let font_attrib = fonts.get_font_attrib(text.font);
         buffer.set_text(
-            &mut fonts.sys,
+            &mut fonts.sys(),
             &text.string,
             &font_attrib,
             ctext::Shaping::Advanced,
@@ -2875,10 +2901,10 @@ impl TextInputState {
 
         let edit = ctext::Editor::new(buffer);
 
-        Self { edit }
+        Self { edit, fonts, multiline }
     }
 
-    pub fn shape(&self, fonts: &mut FontTable, cache: &mut GlyphCache, wgpu: &WGPU) -> ShapedText {
+    pub fn layout_text(&self, cache: &mut GlyphCache, wgpu: &WGPU) -> ShapedText {
         use ctext::Edit;
 
         let buffer = match self.edit.buffer_ref() {
@@ -2903,7 +2929,7 @@ impl TextInputState {
                 key.x_bin = ctext::SubpixelBin::Three;
                 key.y_bin = ctext::SubpixelBin::Three;
 
-                if let Some(mut glyph) = cache.get_glyph(key, fonts, wgpu) {
+                if let Some(mut glyph) = cache.get_glyph(key, wgpu) {
                     glyph.meta.pos += Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y);
                     glyphs.push(glyph);
                 }
@@ -2933,23 +2959,31 @@ impl TextInputState {
         self.edit.insert_string(text, None)
     }
 
-    pub fn delete(&mut self, mods: &winit::keyboard::ModifiersState, sys: &mut ctext::FontSystem) {
+    pub fn delete(&mut self) {
         use ctext::{Action, Edit};
-        self.edit.action(sys, Action::Delete);
+        self.edit.action(&mut self.fonts.sys(), Action::Delete);
     }
 
-    pub fn enter(&mut self, sys: &mut ctext::FontSystem) {
+    pub fn enter(&mut self) {
         use ctext::{Action, Edit};
-        self.edit.action(sys, Action::Enter);
+        if self.multiline {
+            self.edit.action(&mut self.fonts.sys(), Action::Enter);
+        }
+    }
+
+    pub fn escape(&mut self) {
+        use ctext::{Action, Edit};
+        self.edit.action(&mut self.fonts.sys(), Action::Escape);
     }
 
     pub fn backspace(
         &mut self,
         mods: &winit::keyboard::ModifiersState,
-        sys: &mut ctext::FontSystem,
     ) {
         use ctext::{Action, Edit, Motion};
         let ctrl = mods.control_key();
+
+        let sys = &mut self.fonts.sys();
 
         if ctrl && self.edit.selection_bounds().is_none() {
             let end = self.edit.cursor();
@@ -2958,6 +2992,13 @@ impl TextInputState {
             self.edit.delete_range(start, end);
         } else {
             self.edit.action(sys, Action::Backspace)
+        }
+    }
+
+    pub fn deselect_all(&mut self) {
+        use ctext::{Edit, Selection};
+        if self.has_selection() {
+            self.escape()
         }
     }
 
@@ -2979,16 +3020,94 @@ impl TextInputState {
         self.edit.set_selection(Selection::Normal(end));
     }
 
-    pub fn move_cursor_right(
+    pub fn move_cursor_up(
         &mut self,
         mods: &winit::keyboard::ModifiersState,
-        sys: &mut ctext::FontSystem,
     ) {
         use ctext::{Action, Edit, Motion, Selection};
 
         let ctrl = mods.control_key();
         let shift = mods.shift_key();
         let has_sel = self.has_selection();
+        let sys = &mut self.fonts.sys();
+
+        let edit = &mut self.edit;
+
+        if !has_sel && shift {
+            let start = edit.cursor();
+            // if ctrl {
+            //     edit.action(sys, Action::Motion(Motion::UpWord));
+            // } else {
+            edit.action(sys, Action::Motion(Motion::Up));
+            // }
+            edit.set_selection(Selection::Normal(start));
+            return;
+        }
+
+        if ctrl {
+            edit.action(sys, Action::Motion(Motion::Up));
+        }
+        if shift {
+            edit.action(sys, Action::Motion(Motion::Up));
+        } else {
+            if let Some((start, end)) = edit.selection_bounds() {
+                edit.set_cursor(start);
+                edit.set_selection(Selection::None)
+            } else {
+                edit.action(sys, Action::Motion(Motion::Up))
+            }
+        }
+    }
+
+    pub fn move_cursor_down(
+        &mut self,
+        mods: &winit::keyboard::ModifiersState,
+    ) {
+        use ctext::{Action, Edit, Motion, Selection};
+
+        let ctrl = mods.control_key();
+        let shift = mods.shift_key();
+        let has_sel = self.has_selection();
+        let sys = &mut self.fonts.sys();
+
+        let edit = &mut self.edit;
+
+        if !has_sel && shift {
+            let start = edit.cursor();
+            // if ctrl {
+            //     edit.action(sys, Action::Motion(Motion::DownWord));
+            // } else {
+            edit.action(sys, Action::Motion(Motion::Down));
+            // }
+            edit.set_selection(Selection::Normal(start));
+            return;
+        }
+
+        if ctrl {
+            edit.action(sys, Action::Motion(Motion::Down));
+        }
+        if shift {
+            edit.action(sys, Action::Motion(Motion::Down));
+        } else {
+            if let Some((start, end)) = edit.selection_bounds() {
+                edit.set_cursor(end);
+                edit.set_selection(Selection::None)
+            } else {
+                edit.action(sys, Action::Motion(Motion::Down))
+            }
+        }
+    }
+
+    pub fn move_cursor_right(
+        &mut self,
+        mods: &winit::keyboard::ModifiersState,
+    ) {
+        use ctext::{Action, Edit, Motion, Selection};
+
+        let ctrl = mods.control_key();
+        let shift = mods.shift_key();
+        let has_sel = self.has_selection();
+        let sys = &mut self.fonts.sys();
 
         let edit = &mut self.edit;
 
@@ -3021,13 +3140,13 @@ impl TextInputState {
     pub fn move_cursor_left(
         &mut self,
         mods: &winit::keyboard::ModifiersState,
-        sys: &mut ctext::FontSystem,
     ) {
         use ctext::{Action, Edit, Motion, Selection};
 
         let ctrl = mods.control_key();
         let shift = mods.shift_key();
         let has_sel = self.has_selection();
+        let sys = &mut self.fonts.sys();
 
         let edit = &mut self.edit;
 
@@ -3057,16 +3176,41 @@ impl TextInputState {
         }
     }
 
-    pub fn mouse_pressed(&mut self, pos: Vec2, sys: &mut ctext::FontSystem) {
+    pub fn mouse_pressed(&mut self, pos: Vec2) {
         use ctext::{Action, Edit};
-        let pos = pos.as_ivec2();
-        self.edit.action(sys, Action::Click { x: pos.x, y: pos.y })
+        let mut pos = pos.as_ivec2();
+        if !self.multiline {
+            pos.y = 0;
+        }
+        self.edit.action(&mut self.fonts.sys(), Action::Click { x: pos.x, y: pos.y })
     }
 
-    pub fn mouse_dragging(&mut self, pos: Vec2, sys: &mut ctext::FontSystem) {
+    pub fn mouse_double_clicked(&mut self, pos: Vec2) {
         use ctext::{Action, Edit};
-        let pos = pos.as_ivec2();
-        self.edit.action(sys, Action::Drag { x: pos.x, y: pos.y })
+        let mut pos = pos.as_ivec2();
+        if !self.multiline {
+            pos.y = 0;
+        }
+        self.edit.action(&mut self.fonts.sys(), Action::DoubleClick { x: pos.x, y: pos.y })
+    }
+
+    pub fn mouse_triple_clicked(&mut self, pos: Vec2) {
+        use ctext::{Action, Edit};
+        let mut pos = pos.as_ivec2();
+        if !self.multiline {
+            pos.y = 0;
+        }
+        self.edit.action(&mut self.fonts.sys(), Action::TripleClick { x: pos.x, y: pos.y })
+    }
+
+    // TODO[NOTE]: on first / last line we should not do wrapping selection
+    pub fn mouse_dragging(&mut self, pos: Vec2) {
+        use ctext::{Action, Edit};
+        let mut pos = pos.as_ivec2();
+        if !self.multiline {
+            pos.y = 0;
+        }
+        self.edit.action(&mut self.fonts.sys(), Action::Drag { x: pos.x, y: pos.y })
     }
 }
 
@@ -3100,10 +3244,6 @@ macros::flags!(
     DRAGGING_MIDDLE,
     DRAGGING_RIGHT,
 
-    DOUBLE_DRAGGING_LEFT,
-    DOUBLE_DRAGGING_MIDDLE,
-    DOUBLE_DRAGGING_RIGHT,
-
     RELEASED_LEFT,
     RELEASED_MIDDLE,
     RELEASED_RIGHT,
@@ -3115,6 +3255,14 @@ macros::flags!(
     DOUBLE_CLICKED_LEFT,
     DOUBLE_CLICKED_MIDDLE,
     DOUBLE_CLICKED_RIGHT,
+
+    DOUBLE_PRESSED_LEFT,
+    DOUBLE_PRESSED_MIDDLE,
+    DOUBLE_PRESSED_RIGHT,
+
+    TRIPLE_CLICKED_LEFT,
+    TRIPLE_CLICKED_MIDDLE,
+    TRIPLE_CLICKED_RIGHT,
 
     MOUSE_OVER,
     HOVERING |= MOUSE_OVER,
@@ -3136,6 +3284,7 @@ sig_fn!(mouse_over => MOUSE_OVER);
 sig_fn!(pressed => PRESSED_LEFT, PRESSED_KEYBOARD);
 sig_fn!(clicked => CLICKED_LEFT, PRESSED_KEYBOARD);
 sig_fn!(double_clicked => DOUBLE_CLICKED_LEFT);
+sig_fn!(double_pressed => DOUBLE_PRESSED_LEFT);
 sig_fn!(dragging => DRAGGING_LEFT);
 sig_fn!(released => RELEASED_LEFT);
 
@@ -4425,9 +4574,10 @@ pub struct TextItem {
     pub height_i: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
 pub struct FontTable {
     // pub id_to_name: Vec<(FontId, String)>,
-    pub sys: ctext::FontSystem,
+    pub sys: Rc<RefCell<ctext::FontSystem>>,
 }
 
 pub struct GlyphCache {
@@ -4438,18 +4588,24 @@ pub struct GlyphCache {
     pub size: u32,
     pub cached_glyphs: HashMap<ctext::CacheKey, GlyphMeta>,
     pub swash_cache: ctext::SwashCache,
+    pub fonts: FontTable,
 }
 
 impl FontTable {
     pub fn new() -> Self {
         Self {
             // id_to_name: Default::default(),
-            sys: ctext::FontSystem::new(),
+            sys: Rc::new(RefCell::new(ctext::FontSystem::new())),
         }
+    }
+
+    pub fn sys(&mut self) -> std::cell::RefMut<'_, ctext::FontSystem> {
+        self.sys.borrow_mut()
     }
     // TODO[NOTE] remove font id?
     pub fn load_font(&mut self, name: &str, bytes: Vec<u8>) {
-        let db = self.sys.db_mut();
+        let mut sys = self.sys();
+        let db = sys.db_mut();
         let ids = db.load_font_source(ctext::fontdb::Source::Binary(std::sync::Arc::new(bytes)));
         // self.id_to_name.push((id, name.to_string()));
     }
@@ -4462,9 +4618,9 @@ impl FontTable {
 }
 
 impl TextItem {
-    pub fn shape(&self, fonts: &mut FontTable, cache: &mut GlyphCache, wgpu: &WGPU) -> ShapedText {
+    pub fn layout(&self, fonts: &mut FontTable, cache: &mut GlyphCache, wgpu: &WGPU) -> ShapedText {
         let mut buffer = ctext::Buffer::new(
-            &mut fonts.sys,
+            &mut fonts.sys(),
             ctext::Metrics {
                 font_size: self.font_size(),
                 line_height: self.scaled_line_height(),
@@ -4472,14 +4628,14 @@ impl TextItem {
         );
 
         let font_attrib = fonts.get_font_attrib(self.font);
-        buffer.set_size(&mut fonts.sys, self.width(), self.height());
+        buffer.set_size(&mut fonts.sys(), self.width(), self.height());
         buffer.set_text(
-            &mut fonts.sys,
+            &mut fonts.sys(),
             &self.string,
             &font_attrib,
             ctext::Shaping::Advanced,
         );
-        buffer.shape_until_scroll(&mut fonts.sys, false);
+        buffer.shape_until_scroll(&mut fonts.sys(), false);
 
         let mut glyphs = Vec::new();
         let mut width = 0.0;
@@ -4498,7 +4654,7 @@ impl TextItem {
                 key.x_bin = ctext::SubpixelBin::Three;
                 key.y_bin = ctext::SubpixelBin::Three;
 
-                if let Some(mut glyph) = cache.get_glyph(key, fonts, wgpu) {
+                if let Some(mut glyph) = cache.get_glyph(key, wgpu) {
                     glyph.meta.pos += Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y);
                     glyphs.push(glyph);
                 }
@@ -4616,7 +4772,7 @@ impl TextItem {
 }
 
 impl GlyphCache {
-    pub fn new(wgpu: &WGPU) -> Self {
+    pub fn new(wgpu: &WGPU, fonts: FontTable) -> Self {
         const SIZE: u32 = 1024;
         let size = SIZE.min(wgpu.device.limits().max_texture_dimension_2d);
 
@@ -4648,13 +4804,13 @@ impl GlyphCache {
             size,
             cached_glyphs: Default::default(),
             swash_cache: ctext::SwashCache::new(),
+            fonts,
         }
     }
 
     pub fn get_glyph(
         &mut self,
         glyph_key: ctext::CacheKey,
-        fonts: &mut FontTable,
         wgpu: &WGPU,
     ) -> Option<Glyph> {
         if let Some(&meta) = self.cached_glyphs.get(&glyph_key) {
@@ -4664,7 +4820,7 @@ impl GlyphCache {
             });
         }
 
-        self.alloc_new_glyph(glyph_key, fonts, wgpu)
+        self.alloc_new_glyph(glyph_key, wgpu)
     }
 
     pub fn alloc_rect(&mut self, mut w: u32, mut h: u32) -> Rect {
@@ -4727,12 +4883,11 @@ impl GlyphCache {
     pub fn alloc_new_glyph(
         &mut self,
         glyph_key: ctext::CacheKey,
-        fonts: &mut FontTable,
         wgpu: &WGPU,
     ) -> Option<Glyph> {
         let img = self
             .swash_cache
-            .get_image_uncached(&mut fonts.sys, glyph_key)?;
+            .get_image_uncached(&mut self.fonts.sys(), glyph_key)?;
         let x = img.placement.left;
         let y = img.placement.top;
         let w = img.placement.width;

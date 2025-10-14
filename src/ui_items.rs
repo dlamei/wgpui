@@ -34,7 +34,7 @@ impl ui::Context {
         let default = self.style.btn_default();
 
         let total_h = self.style.line_height();
-        let text_shape = self.shape_text(label, self.style.text_size());
+        let text_shape = self.layout_text(label, self.style.text_size());
         let text_dim = text_shape.size();
 
         let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
@@ -75,7 +75,7 @@ impl ui::Context {
         let height = self.style.line_height();
         let width = height * 1.8;
         let size = Vec2::new(width, self.style.line_height());
-        let text_shape = self.shape_text(label, self.style.text_size());
+        let text_shape = self.layout_text(label, self.style.text_size());
         let text_dim = text_shape.size();
 
         let id = self.gen_id(label);
@@ -134,7 +134,7 @@ impl ui::Context {
         let default = self.style.btn_default();
 
         let box_size = self.style.line_height();
-        let text_shape = self.shape_text(label, self.style.text_size());
+        let text_shape = self.layout_text(label, self.style.text_size());
 
         let rect = self.place_item(id, Vec2::splat(box_size));
         let sig = self.register_item(id);
@@ -247,7 +247,7 @@ impl ui::Context {
 
         let total_h = self.style.line_height();
 
-        let text_shape = self.shape_text(label, self.style.text_size());
+        let text_shape = self.layout_text(label, self.style.text_size());
         let text_dim = text_shape.size();
 
         let icon = if *open {
@@ -255,7 +255,7 @@ impl ui::Context {
         } else {
             ui::PhosphorFont::CARET_RIGHT
         };
-        let icon_shape = self.shape_icon(icon, self.style.text_size());
+        let icon_shape = self.layout_icon(icon, self.style.text_size());
         let icon_dim = text_shape.size();
 
         let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
@@ -305,20 +305,24 @@ impl ui::Context {
 
         let pad = (line_height - text_height) / 2.0;
         self.move_down(pad);
-        let shape = self.shape_text(text, self.style.text_size());
+        let layout = self.layout_text(text, self.style.text_size());
 
         let p = self.get_current_panel();
         let id = p.gen_id(text);
 
-        let size = Vec2::new(shape.width, shape.height);
+        let size = Vec2::new(layout.width, layout.height.max(self.style.line_height()));
         let rect = self.place_item(id, size);
         // self.register_item(id);
         self.move_down(pad);
 
-        self.draw(|list| list.add_text(rect.min, &shape, self.style.text_col()));
+        self.draw(|list| list.add_text(rect.min, &layout, self.style.text_col()));
     }
 
     pub fn text_input(&mut self, text: &str) {
+        self.text_input_ex(text, false);
+    }
+
+    pub fn text_input_ex(&mut self, text: &str, multiline: bool) {
         use ctext::{Action, Edit, Motion};
 
         let text_height = self.style.text_size();
@@ -333,26 +337,26 @@ impl ui::Context {
             let item = ui::TextItem::new(text.to_string(), self.style.text_size(), 1.0, "Inter");
             self.text_input_states.insert(
                 id,
-                TextInputState::new(&mut self.font_table.get_mut(), item),
+                TextInputState::new(self.font_table.clone(), item, false),
             );
         }
 
         let input = &mut self.text_input_states[id];
+        input.multiline = multiline;
 
         let cursor_pos = input.edit.cursor_position();
 
         input
             .edit
-            .shape_as_needed(&mut self.font_table.get_mut().sys, true);
+            .shape_as_needed(&mut self.font_table.sys(), true);
 
-        let shape = input.shape(
-            self.font_table.get_mut(),
+        let layout = input.layout_text(
             self.glyph_cache.get_mut(),
             &mut self.draw.wgpu,
         );
-        let text_dim = shape.size();
+        let text_dim = layout.size();
 
-        let total_h = line_height;
+        let total_h = (text_dim.y).max(self.style.line_height());
         let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
         let horiz_pad = vert_pad;
         let size = Vec2::new(text_dim.x + horiz_pad * 2.0, total_h);
@@ -364,59 +368,211 @@ impl ui::Context {
             self.set_cursor_icon(CursorIcon::Text);
         }
 
-        if sig.pressed() {
-            let x = (self.mouse.pos.x - rect.min.x) as i32;
-            let y = (self.mouse.pos.y - rect.min.y) as i32;
-            self.text_input_states[id].edit.action(
-                &mut self.font_table.borrow_mut().sys,
-                Action::Click { x, y },
-            );
+        let relative_pos = self.mouse.pos - rect.min;
+        // if sig.double_clicked() || sig.double_pressed() || sig.released() || sig.dragging() {
+        //     println!("{sig}");
+        // }
+        if sig.double_pressed() {
+            // TODO[BUG]: only works when double pressing and dragging afterwards, if holding the
+            // double press we loose word selection mode
+            self.text_input_states[id].mouse_double_clicked(relative_pos);
         } else if sig.dragging() {
-            let x = (self.mouse.pos.x - rect.min.x) as i32;
-            let y = (self.mouse.pos.y - rect.min.y) as i32;
-            self.text_input_states[id]
-                .edit
-                .action(&mut self.font_table.borrow_mut().sys, Action::Drag { x, y });
+            self.text_input_states[id].mouse_dragging(relative_pos);
+        } else if sig.pressed() {
+            self.text_input_states[id].mouse_pressed(relative_pos);
         }
 
-        let outline_col = if self.active_id == id {
-            self.style.btn_hover()
-        } else {
-            self.style.panel_dark_bg()
-        };
+        if self.active_id != id {
+            self.text_input_states[id].deselect_all();
+        }
 
         let text_pos =
             rect.min + Vec2::new((size.x - text_dim.x) * 0.5, (size.y - text_dim.y) * 0.5);
-
-        self.draw_text_input(id, rect.min);
-        // self.draw(|list| {
-        //     list.rect(rect.min, rect.max)
-        //         .corners(CornerRadii::all(self.style.btn_corner_radius()))
-        //         .outline(ui::Outline::new(outline_col, 3.0))
-        //         .add();
-
-        //     let input = &self.text_input_states[id];
-        //     let selection = input.edit.selection_bounds();
-        //     let cursor = input.edit.cursor();
-        //     // list.add_text(text_pos, &shape, self.style.text_col());
-
-        //     // if let Some((cursor_x, _cursor_y)) = input.edit.cursor_position() {
-        //     //     let cursor_width = 2.0;
-        //     //     let cursor_height = text_dim.y.max(1.0);
-        //     //     let cursor_top = text_pos.y;
-        //     //     let cursor_pos = Vec2::new(text_pos.x + cursor_x as f32, cursor_top);
-
-        //     //     list.rect(
-        //     //         cursor_pos,
-        //     //         cursor_pos + Vec2::new(cursor_width, cursor_height),
-        //     //     )
-        //     //     .fill(self.style.btn_press())
-        //     //     .add();
-        //     // }
-        // });
+        self.draw_text_input(id, text_pos, rect);
     }
 
-    pub fn draw_text_input(&mut self, id: Id, pos: Vec2) {
+    pub fn draw_text_input(&mut self, id: Id, pos: Vec2, rect: Rect) {
+    use ctext::Edit;
+    use std::cmp;
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let bg = self.style.panel_dark_bg();
+    let text_color = self.style.text_col();
+    let cursor_color = self.style.btn_press();
+    let selection_color = self.style.btn_hover();
+    let selected_text_color = self.style.text_col();
+
+    let input = &mut self.text_input_states[id];
+
+    let mut glyphs = Vec::new();
+    let mut selection_rects = Vec::new();
+    let mut cursor_rects = Vec::new();
+    // let mut cursor_rects: Vec<(i32, i32, u32, u32)> = Vec::new();
+
+    let sel_bounds = input.edit.selection_bounds();
+    let cursor = input.edit.cursor();
+    input.edit.with_buffer_mut(|buffer| {
+        for run in buffer.layout_runs() {
+            let line_i = run.line_i;
+            let line_y = run.line_y;
+            let line_top = run.line_top;
+            let line_height = run.line_height;
+
+            // Selection highlighting (collect rects)
+            // Selection highlighting (collect rects)
+            if let Some((start, end)) = sel_bounds {
+                if line_i >= start.line && line_i <= end.line {
+                    // use floats for accurate accumulation to avoid zero-width from truncation
+                    let mut range_opt: Option<(f32, f32)> = None;
+
+                    for glyph in run.glyphs.iter() {
+                        let cluster = &run.text[glyph.start..glyph.end];
+                        let total = cluster.grapheme_indices(true).count();
+                        let mut c_x = glyph.x;
+                        let c_w = glyph.w / total as f32;
+
+                        for (i, _g) in cluster.grapheme_indices(true) {
+                            let c_start = glyph.start + i;
+                            let c_end = glyph.start + i + _g.len();
+                            if (start.line != line_i || c_end > start.index)
+                                && (end.line != line_i || c_start < end.index)
+                            {
+                                range_opt = match range_opt.take() {
+                                    Some((min_f, max_f)) => Some((
+                                            min_f.min(c_x),
+                                            max_f.max(c_x + c_w),
+                                    )),
+                                    None => Some((c_x, c_x + c_w)),
+                                };
+                            } else if let Some((min_f, max_f)) = range_opt.take() {
+                                let min = min_f.floor();
+                                let pos = Vec2::new(min, line_top);
+                                let max = max_f.ceil();
+                                let size = Vec2::new((max - min).max(0.0), line_height);
+                                selection_rects.push(Rect::from_min_size(pos, size));
+                            }
+                            c_x += c_w;
+                        }
+                    }
+
+                    // IMPORTANT: Push any remaining accumulated range after processing all glyphs
+                    // This handles the case where the selection continues to the end of the line
+                    if let Some((min_f, max_f)) = range_opt.take() {
+                        let min = min_f.floor();
+                        let pos = Vec2::new(min, line_top);
+                        let max = max_f.ceil();
+                        let size = Vec2::new((max - min).max(0.0), line_height);
+                        selection_rects.push(Rect::from_min_size(pos, size));
+                    }
+
+                    if run.glyphs.is_empty() && end.line > line_i {
+                        range_opt = Some((0.0, buffer.size().0.unwrap_or(0.0)));
+                    }
+
+                    if let Some((mut min_f, mut max_f)) = range_opt.take() {
+                        if end.line > line_i {
+                            if run.rtl {
+                                min_f = 0.0;
+                            } else {
+                                max_f = buffer.size().0.unwrap_or(0.0);
+                            }
+                        }
+                        let min = min_f.floor();
+                        let pos = Vec2::new(min, line_top);
+                        let max = max_f.ceil();
+                        let size = Vec2::new((max - min).max(0.0), line_height);
+                        selection_rects.push(Rect::from_min_size(pos, size));
+                    }
+                }
+            }
+
+            // Cursor
+            if let Some((x, y)) = cursor_position(&cursor, &run) {
+                let pos = Vec2::new(x as f32, y as f32);
+                let size = Vec2::new(2.0, line_height);
+                cursor_rects.push(Rect::from_min_size(pos, size))
+                // cursor_rects.push((x, y, 1, line_height as u32));
+            }
+
+            // Glyphs (collect textured quads + color)
+            for glyph in run.glyphs.iter() {
+                let physical_glyph = glyph.physical((0., 0.), 1.0);
+                let mut glyph_color = text_color;
+
+                if text_color != selected_text_color {
+                    if let Some((start, end)) = sel_bounds {
+                        if line_i >= start.line
+                            && line_i <= end.line
+                            && (start.line != line_i || glyph.end > start.index)
+                            && (end.line != line_i || glyph.start < end.index)
+                        {
+                            glyph_color = selected_text_color;
+                        }
+                    }
+                }
+
+                let mut key = physical_glyph.cache_key;
+                key.x_bin = ctext::SubpixelBin::Three;
+                key.y_bin = ctext::SubpixelBin::Three;
+
+                let mut cache = self.glyph_cache.borrow_mut();
+                let wgpu = &self.draw.wgpu;
+                if let Some(mut cached) = cache.get_glyph(key, wgpu) {
+                    let pos = cached.meta.pos
+                        + Vec2::new(
+                            physical_glyph.x as f32,
+                            physical_glyph.y as f32 + run.line_y,
+                        );
+                    let size = cached.meta.size;
+                    let uv_min = cached.meta.uv_min;
+                    let uv_max = cached.meta.uv_max;
+
+                    glyphs.push((ui::GlyphMeta { pos, size, uv_min, uv_max }, glyph_color));
+                }
+            }
+        }
+    });
+
+    // Draw: selection -> cursor -> glyphs (matches reference ordering)
+    self.draw(|list| {
+        list.rect(rect.min, rect.max)
+            .corners(CornerRadii::all(self.style.btn_corner_radius()))
+            .fill(bg)
+            .add();
+
+        for r in &selection_rects {
+            list.rect(
+                r.min + pos,
+                r.max + pos,
+            )
+            .fill(selection_color)
+            .add();
+        }
+
+        if self.active_id == id && selection_rects.is_empty() {
+            for r in cursor_rects {
+                list.rect(
+                    r.min + pos,
+                    r.max + pos,
+                )
+                    .fill(cursor_color)
+                    .add();
+                }
+        }
+
+        for (g, color) in glyphs {
+            let min = g.pos;
+            let max = min + g.size;
+            list.rect(min + pos, max + pos)
+                .texture_uv(g.uv_min, g.uv_max, 1)
+                .fill(color)
+                .add();
+        }
+    });
+}
+
+
+    pub fn draw_text_input2(&mut self, id: Id, pos: Vec2) {
         use ctext::Edit;
         use std::cmp;
         use unicode_segmentation::UnicodeSegmentation;
@@ -530,9 +686,8 @@ impl ui::Context {
                     key.y_bin = ctext::SubpixelBin::Three;
 
                     let mut cache = self.glyph_cache.borrow_mut();
-                    let mut fonts = self.font_table.borrow_mut();
                     let wgpu = &self.draw.wgpu;
-                    if let Some(mut cached) = cache.get_glyph(key, &mut fonts, wgpu) {
+                    if let Some(mut cached) = cache.get_glyph(key, wgpu) {
                         let min = cached.meta.pos
                             + Vec2::new(
                                 physical_glyph.x as f32,
@@ -576,120 +731,6 @@ impl ui::Context {
             }
         });
     }
-
-    // pub fn draw_text_input(&mut self, id: Id, pos: Vec2) {
-    //     use ctext::Edit;
-
-    //     let mut input = &mut self.text_input_states[id];
-
-    //     let mut glyphs = Vec::new();
-    //     input.edit.with_buffer_mut(|buf| {
-    //         // TODO[CHECK]: when how to call shape_...
-
-    //         for run in buf.layout_runs() {
-
-    //             for g in run.glyphs {
-    //                 let g_phys = g.physical((0.0, 0.0), 1.0);
-    //                 let mut key = g_phys.cache_key;
-
-    //                 key.x_bin = ctext::SubpixelBin::Three;
-    //                 key.y_bin = ctext::SubpixelBin::Three;
-
-    //                 let mut cache = self.glyph_cache.borrow_mut();
-    //                 let mut fonts = self.font_table.borrow_mut();
-    //                 let wgpu = &self.draw.wgpu;
-    //                 if let Some(mut glyph) = cache.get_glyph(key, &mut fonts, wgpu) {
-    //                     let min = glyph.meta.pos + Vec2::new(g_phys.x as f32, g_phys.y as f32 + run.line_y) + pos;
-    //                     let max = min + glyph.meta.size;
-    //                     let uv_min = glyph.meta.uv_min;
-    //                     let uv_max = glyph.meta.uv_max;
-
-    //                     glyphs.push((min, max, uv_min, uv_max));
-
-    //                 }
-    //             }
-    //         }
-    //     });
-
-    //     self.draw(|list| {
-    //         for (min, max, uv_min, uv_max) in glyphs {
-    //             list.rect(min, max)
-    //             .texture_uv(uv_min, uv_max, 1)
-    //             .add()
-    //         }
-    //     });
-
-    // }
-
-    // pub fn text_input(&mut self, text: &str) {
-    //     use ctext::Edit;
-    //     let text_height = self.style.text_size();
-    //     let line_height = self.style.line_height().max(text_height);
-
-    //     let pad = (line_height - text_height) / 2.0;
-    //     self.move_down(pad);
-
-    //     let p = self.get_current_panel();
-    //     let id = p.gen_id(text);
-
-    //     if !self.text_input_states.contains_id(id) {
-    //     let itm = ui::TextItem::new(text.to_string(), self.style.text_size(), 1.0, "Inter");
-    //         self.text_input_states.insert(id, TextInputState::new(&mut self.font_table.borrow_mut(), itm))
-    //     }
-
-    //     let input = self.text_input_states.get_mut(id).unwrap();
-    //     input.edit.shape_as_needed(&mut self.font_table.borrow_mut().sys, true);
-    //     let cursor_pos = input.edit.cursor_position();
-    //     let shape = input.shape(&mut self.font_table.borrow_mut(), &mut self.glyph_cache.borrow_mut(), &mut self.draw.wgpu);
-    //     let text_dim = shape.size();
-    //     let total_h = self.style.line_height();
-
-    //     let vert_pad = ((total_h - text_dim.y) / 2.0).max(0.0);
-    //     let horiz_pad = vert_pad;
-    //     let size = Vec2::new(text_dim.x + horiz_pad * 2.0, total_h);
-    //     let pos = input.edit.cursor_position();
-
-    //     let rect = self.place_item(id, size);
-    //     let sig = self.register_item(id);
-
-    //     let start_drag_outside = self
-    //         .mouse
-    //         .drag_start(MouseBtn::Left)
-    //         .map_or(false, |pos| !rect.contains(pos));
-
-    //     let outline_col = if self.active_id == id {
-    //         self.style.btn_hover()
-    //     } else {
-    //         self.style.panel_dark_bg()
-    //     };
-    //     // let (btn_col, text_col) = if sig.pressed() && !start_drag_outside {
-    //     //     (active, self.style.btn_press_text())
-    //     // } else if sig.hovering() {
-    //     //     (hover, self.style.text_col())
-    //     // } else {
-    //     //     (default, self.style.text_col())
-    //     // };
-
-    //     let text_pos =
-    //         rect.min + Vec2::new((size.x - text_dim.x) * 0.5, (size.y - text_dim.y) * 0.5);
-
-    //     self.draw(|list| {
-    //         list.rect(rect.min, rect.max)
-    //             .corners(CornerRadii::all(self.style.btn_corner_radius()))
-    //             .outline(ui::Outline::new(outline_col, 3.0))
-    //             .add();
-
-    //         list.add_text(text_pos, &shape, self.style.text_col());
-
-    //         if let Some((x, y)) = cursor_pos {
-    //             let pos = Vec2::new(x as f32, y as f32) + rect.min;
-    //             list.rect(pos, pos + Vec2::new(3.0, self.style.line_height()))
-    //                 .fill(self.style.btn_press())
-    //                 .add();
-    //         }
-
-    //     });
-    // }
 
     pub fn begin_tabbar(&mut self, label: &str) {
         // TODO[NOTE] tabbar stack
@@ -737,7 +778,7 @@ impl ui::Context {
             tb.selected_tab_id = id;
         }
 
-        let text_shape = self.shape_text(label, self.style.text_size());
+        let text_shape = self.layout_text(label, self.style.text_size());
         let text_dim = text_shape.size();
         let vert_pad = ((tb_rect.height() - text_dim.y) / 2.0).max(0.0);
         let item_width = vert_pad * 2.0 + text_dim.x;
