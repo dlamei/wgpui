@@ -3,7 +3,6 @@ mod core;
 mod gpu;
 mod mouse;
 pub mod rect;
-mod text_input;
 mod ui;
 mod ui_items;
 
