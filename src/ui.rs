@@ -345,9 +345,11 @@ impl Context {
 
     // TODO[BUG]: scrolling on mousepad with two fingers and one finger leaves the mousepad results
     // in a scroll upwards
-    // TODO[NOTE]: scroll velocity
+    // TODO[NOTE]: we need acceleration (or maybe smoothing) when scrolling. or momentum
     pub fn set_mouse_scroll(&mut self, delta: Vec2) {
-        if !self.active_panel_id.is_null() {
+        if !self.hot_panel_id.is_null() {
+            self.panels[self.hot_panel_id].move_scroll(delta * self.scroll_speed);
+        } else if !self.active_panel_id.is_null() {
             self.panels[self.active_panel_id].move_scroll(delta * self.scroll_speed);
             // self.panels[self.active_panel_id].scroll += delta * self.scroll_speed;
         }
@@ -402,21 +404,36 @@ impl Context {
     }
 
     pub fn current_drawlist(&self) -> &DrawList {
-        &self.get_current_panel().draw_list
+        &self.get_current_panel().drawlist
     }
 
     pub fn current_drawlist_over(&self) -> &DrawList {
-        &self.get_current_panel().draw_list_over
+        &self.get_current_panel().drawlist_over
+    }
+
+    pub fn push_merged_clip_rect(&self, rect: Rect) {
+        let list = &self.get_current_panel().drawlist;
+        list.push_merged_clip_rect(rect);
+    }
+
+    pub fn push_clip_rect(&self, rect: Rect) {
+        let list = &self.get_current_panel().drawlist;
+        list.push_clip_rect(rect);
+    }
+
+    pub fn pop_clip_rect(&self) {
+        let list = &self.get_current_panel().drawlist;
+        list.pop_clip_rect();
     }
 
     pub fn draw(&self, itm: impl DrawableRects) -> &Self {
-        let list = &self.get_current_panel().draw_list;
+        let list = &self.get_current_panel().drawlist;
         itm.add_to_drawlist(list);
         self
     }
 
     pub fn draw_over(&self, itm: impl DrawableRects) -> &Self {
-        let list = &self.get_current_panel().draw_list_over;
+        let list = &self.get_current_panel().drawlist_over;
         itm.add_to_drawlist(list);
         self
     }
@@ -446,6 +463,7 @@ impl Context {
     }
 
     pub fn begin_ex(&mut self, name: impl Into<String>, flags: PanelFlags) {
+
         fn next_window_pos(screen: Vec2, panel_size: Vec2) -> Vec2 {
             static mut PANEL_COUNT: u32 = 1;
             let offset = 60.0;
@@ -475,18 +493,32 @@ impl Context {
             newly_created = true;
         }
 
+        // setup child / parent ids
+
+        // clear panels children every frame 
+        self.panels[id].children.clear();
+        let (root_id, parent_id) = if flags.has(PanelFlags::IS_CHILD) {
+            let parent_id = self.current_panel_id;
+            let parent = &mut self.panels[parent_id];
+            parent.children.push(id);
+            (parent.root, parent_id)
+        } else {
+            (id, Id::NULL)
+        };
+
+
         if newly_created {
-
             if flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
-                let parent_id = self.current_panel_id;
                 let parent = &self.panels[parent_id];
-                let draw_list = parent.draw_list.clone();
-                let draw_list_over = parent.draw_list_over.clone();
+                let draw_list = parent.drawlist.clone();
+                let draw_list_over = parent.drawlist_over.clone();
                 let p = &mut self.panels[id];
-                p.draw_list = draw_list;
-                p.draw_list_over = draw_list_over;
-            } 
+                p.drawlist = draw_list;
+                p.drawlist_over = draw_list_over;
+            }
 
+            // only push to draw list once when created
+            // persists across frames
             let p = &mut self.panels[id];
             p.draw_order = self.draw_order.len();
             self.draw_order.push(id);
@@ -495,7 +527,6 @@ impl Context {
                 p.pos = next_window_pos(self.draw.screen_size, self.next.size);
             }
         }
-
 
         self.current_panel_stack.push(id);
         self.current_panel_id = id;
@@ -509,20 +540,25 @@ impl Context {
             p.pos.y = self.next.pos.y;
         }
 
+        // reset temp data
         if !flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
-            p.draw_list.clear();
-            p.draw_list_over.clear();
-            p.root = Id::NULL;
+            if !p.drawlist.data.borrow().clip_stack.is_empty() {
+                log::error!("clip rect stack not empty");
+            }
+            p.drawlist.clear();
+            p.drawlist_over.clear();
         }
 
+        p.root = root_id;
+        p.parent_id = parent_id;
+
         assert!(p.id == id);
-        p.root = p.id;
         // TODO[CHECK]:
-        p.parent_id = p.id;
         p.push_id(p.id);
         p.flags = flags;
         p.explicit_size = self.next.size;
-        p.draw_list.data.borrow_mut().circle_max_err = self.circle_max_err;
+        p.drawlist.data.borrow_mut().circle_max_err = self.circle_max_err;
+        p.drawlist.draw_clip_rect = self.draw_clip_rect;
         p.titlebar_height = if id == self.window_panel_id {
             self.style.window_titlebar_height()
         } else {
@@ -534,7 +570,7 @@ impl Context {
         p.scrollbar_padding = self.style.scrollbar_padding();
         p.last_frame_used = self.frame_count;
         p.move_id = p.gen_id("##_MOVE");
-        p.draw_list.data.borrow_mut().clip_content = self.clip_content;
+        p.drawlist.data.borrow_mut().clip_content = self.clip_content;
 
         // p.scroll = p.next_scroll;
         p.scroll = p.next_scroll.min(p.scroll_max()).max(p.scroll_min());
@@ -555,11 +591,11 @@ impl Context {
             p.titlebar_height = 0.0;
         }
 
-        if !p.flags.has(PanelFlags::ONLY_MOVE_FROM_TITLEBAR) {
-            p.nav_root = p.move_id;
-        } else {
-            p.nav_root = p.root;
-        }
+        // if !p.flags.has(PanelFlags::ONLY_MOVE_FROM_TITLEBAR) {
+        //     p.nav_root = p.move_id;
+        // } else {
+        //     p.nav_root = p.root;
+        // }
 
         if p.id != self.window_panel_id {
             let height = p.titlebar_height;
@@ -595,12 +631,14 @@ impl Context {
         p.full_content_size = prev_max_pos - prev_content_start;
 
         p.full_size =
-            prev_max_pos - p.pos + Vec2::splat(p.padding) + Vec2::splat(outline.offset()) * 2.0;
+            prev_max_pos - p.pos + Vec2::splat(p.padding); // + Vec2::splat(outline.offset()) * 2.0;
 
-        if self.frame_count - p.frame_created == 1 {
+        // TODO[NOTE]: is it possible to get size from only 1 frame?
+        // or configurable
+        if self.frame_count - p.frame_created <= 2 {
             // p.size = p.full_size * 1.1;
             // TODO[NOTE]: account for scrollbar width?
-            p.size = p.full_size + Vec2::splat(p.padding);
+            p.size = p.full_size + p.padding + self.style.scrollbar_padding();
         }
 
         let panel_pos = p.pos;
@@ -614,10 +652,23 @@ impl Context {
 
         p.size = panel_size.min(p.max_panel_size()).max(p.min_panel_size());
 
-        let p = &self.panels[id];
-        let panel_rect = p.panel_rect();
+        let outline_width = self.style.panel_outline().width;
+        let full_rect = Rect::from_min_size(p.pos - outline_width, p.size + 2.0 * outline_width);
+        let mut clip_rect = p.full_rect;
 
-        if panel_rect.contains(self.mouse.pos)
+        if flags.has(PanelFlags::USE_PARENT_CLIP) {
+            let clip = p.drawlist.current_clip_rect();
+            clip_rect = p.full_rect.intersect(clip);
+        }
+
+        p.full_rect = full_rect;
+        p.clip_rect = clip_rect;
+
+
+        let p = &self.panels[id];
+        // let panel_rect = p.panel_rect();
+
+        if p.clip_rect.contains(self.mouse.pos)
             && (self.hot_panel_id.is_null()
                 || self.panels[self.hot_panel_id].draw_order < p.draw_order)
             && self.panel_action.is_none()
@@ -627,6 +678,7 @@ impl Context {
             self.hot_panel_id = id;
             self.hot_id = id;
         }
+
 
         // TODO[NOTE]: include outline width in panel size
         // draw panel
@@ -645,15 +697,19 @@ impl Context {
         let mut clip = p.panel_rect_with_outline();
         clip.min = clip.min.floor();
         clip.max = clip.max.ceil();
-        self.current_drawlist()
-            .push_clip_rect(clip);
+
+        if flags.has(PanelFlags::USE_PARENT_CLIP) {
+            self.push_merged_clip_rect(clip);
+        } else {
+            self.push_clip_rect(clip);
+        }
 
         self.draw(
             Rect::from_min_size(panel_pos, panel_size)
                 .draw_rect()
                 .fill(bg_fill)
                 .outline(outline)
-                .corners(self.style.panel_corner_radius())
+                .corners(self.style.panel_corner_radius()),
         );
         // list.rect(panel_pos, panel_pos + panel_size)
         //     .fill(bg_fill)
@@ -662,9 +718,9 @@ impl Context {
         //     .add();
         // });
 
-        if self.draw_clip_rect {
-            self.draw_over(clip.draw_rect().outline(Outline::new(RGBA::RED, 2.0)));
-        }
+        // if self.draw_clip_rect {
+        //     self.draw_over(clip.draw_rect().outline(Outline::new(RGBA::RED, 2.0)));
+        // }
 
         if self.draw_content_outline {
             self.draw_over(
@@ -754,11 +810,14 @@ impl Context {
 
         let p = &self.panels[id];
 
-        self.current_drawlist()
-            .push_clip_rect(p.visible_content_rect());
-        if self.draw_clip_rect {
-            self.draw(clip.draw_rect().outline(Outline::new(RGBA::RED, 2.0)));
+        if flags.has(PanelFlags::USE_PARENT_CLIP) {
+            self.push_merged_clip_rect(p.visible_content_rect());
+        } else {
+            self.push_clip_rect(p.visible_content_rect());
         }
+        // if self.draw_clip_rect {
+        //     self.draw(clip.draw_rect().outline(Outline::new(RGBA::RED, 2.0)));
+        // }
         // self.draw(|list| {
         //     // content clip rectangle
         //     let clip = p.visible_content_rect();
@@ -838,8 +897,13 @@ impl Context {
             self.panel_action = PanelAction::None;
         }
 
-        let is_scrolling = if let PanelAction::Scroll { id, axis, .. } = self.panel_action {
-            id == p.id && axis == axis
+        let is_scrolling = if let PanelAction::Scroll {
+            id,
+            axis: curr_axis,
+            ..
+        } = self.panel_action
+        {
+            id == p.id && axis == curr_axis
         } else {
             false
         };
@@ -853,18 +917,12 @@ impl Context {
             self.style.panel_dark_bg()
         };
 
-        self.draw_over(
+        self.draw(
             Rect::from_min_max(min, max)
                 .draw_rect()
                 .corners(scrollbar_width * 0.3)
                 .fill(handle_col),
         );
-        // self.draw_over(|list| {
-        //     list.rect(min, max)
-        //         .corners(CornerRadii::all(scrollbar_width * 0.3))
-        //         .fill(handle_col)
-        //         .add();
-        // });
     }
 
     pub fn draw_panel_decorations(
@@ -874,11 +932,11 @@ impl Context {
         close: bool,
     ) -> (Signal, Signal, Signal, Signal) {
         let p = self.get_current_panel();
-        let move_id = p.move_id;
         let titlebar_height = p.titlebar_height;
         let panel_pos = p.pos;
         let panel_size = p.size;
         let title = p.name.clone();
+        let move_id = p.move_id;
 
         // draw titlebar background
         let title_text = self.layout_text(&title, self.style.text_size());
@@ -910,10 +968,15 @@ impl Context {
         //     )
         // });
 
+        // let tb_id = p.gen_id("#_TITLEBAR");
         let tb_sig = self.register_rect(
             move_id,
             Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height)),
         );
+
+        // if tb_sig.pressed() {
+        //     self.active_id = move_id;
+        // }
 
         let btn_size = Vec2::new(25.0, 25.0);
         let btn_spacing = 10.0;
@@ -1129,7 +1192,7 @@ impl Context {
         if !self.prev_active_panel_id.is_null() {
             let p = &mut self.panels[self.prev_active_panel_id];
             if self.active_id == p.move_id && !p.move_id.is_null()
-                || self.active_id == p.id && p.nav_root == p.move_id
+            // || self.active_id == p.id && p.nav_root == p.move_id
             {
                 if self.mouse.dragging(MouseBtn::Left) && self.panel_action.is_none() {
                     self.panel_action = PanelAction::Move {
@@ -1211,6 +1274,16 @@ impl Context {
         // }
 
         if sig.hovering() && self.active_id == id {
+            if self.mouse.just_pressed(Btn::Left) {
+                sig |= Signal::JUST_PRESSED_LEFT;
+            }
+            if self.mouse.just_pressed(Btn::Right) {
+                sig |= Signal::JUST_PRESSED_RIGHT;
+            }
+            if self.mouse.just_pressed(Btn::Middle) {
+                sig |= Signal::JUST_PRESSED_MIDDLE;
+            }
+
             if self.mouse.pressed(Btn::Left) {
                 sig |= Signal::PRESSED_LEFT;
             }
@@ -1629,14 +1702,19 @@ impl Context {
 
     pub fn begin_child(&mut self, name: &str) {
         let id = self.gen_id(name);
-        let panel_flags = PanelFlags::NO_TITLEBAR | PanelFlags::USE_PARENT_DRAWLIST;
+        let panel_flags = PanelFlags::NO_TITLEBAR
+            | PanelFlags::USE_PARENT_DRAWLIST
+            | PanelFlags::DRAW_V_SCROLLBAR
+            | PanelFlags::USE_PARENT_CLIP
+            | PanelFlags::IS_CHILD;
 
         let parent = &mut self.panels[self.current_panel_id];
         let root = parent.root;
-        let nav_root = parent.nav_root;
+        // let nav_root = parent.nav_root;
         parent.child_id = id;
 
-        self.next.pos = parent.cursor_pos();
+        let outline_offset = self.style.panel_outline().width;
+        self.next.pos = parent.cursor_pos() + Vec2::splat(outline_offset);
         self.begin_ex(name, panel_flags);
 
         let child_id = self.current_panel_id;
@@ -1644,7 +1722,7 @@ impl Context {
 
         let child = &mut self.panels[child_id];
         child.root = root;
-        child.nav_root = nav_root;
+        // child.nav_root = nav_root;
     }
 
     pub fn end_child(&mut self) {
@@ -1692,6 +1770,7 @@ impl Context {
 
         self.begin_ex("##_WINDOW_PANEL", flags);
         self.window_panel_id = self.current_panel_id;
+
         // }
 
         // let p_info: Vec<_> = self.panels.iter().map(|(_, p)| (p.name.clone(), p.draw_order)).collect();
@@ -1760,9 +1839,10 @@ impl Context {
         ui_text!(self: "action: {}", self.panel_action);
         ui_text!(self: "n. of draw calls: {}", self.n_draw_calls);
 
-        self.separator_h(4.0, self.style.panel_dark_bg());
+        // self.separator_h(4.0, self.style.panel_dark_bg());
 
-        // self.begin_child("text");
+        self.begin_child("text");
+        // println!("{:#?}", self.get_current_panel());
         let mut flags = TextInputFlags::NONE;
         if self.checkbox_intern("multiline input (buggy)") {
             flags |= TextInputFlags::MULTILINE
@@ -1772,10 +1852,8 @@ impl Context {
         }
 
         let avail = self.available_content();
-        self.current_drawlist().push_clip_rect(Rect::from_min_size(self.cursor_pos(), Vec2::new(avail.x, 30.0)));
         self.text_input_ex("this is a text input field", flags);
-        self.current_drawlist().pop_clip_rect();
-        // self.end_child();
+        self.end_child();
 
         self.move_down(10.0);
         self.begin_tabbar("tabbar");
@@ -1809,9 +1887,12 @@ impl Context {
             v = v.round();
             self.style.set_var(StyleVar::PanelPadding(v));
 
-            let mut v = self.style.panel_outline();
-            self.slider_f32("panel outline width", 0.0, 30.0, &mut v.width);
-            self.style.set_var(StyleVar::PanelOutline(v));
+            let mut out1 = self.style.panel_outline();
+            let mut out2 = self.style.panel_hover_outline();
+            self.slider_f32("panel outline width", 0.0, 30.0, &mut out1.width);
+            out2.width = out1.width;
+            self.style.set_var(StyleVar::PanelOutline(out1));
+            self.style.set_var(StyleVar::PanelHoverOutline(out2));
 
             let mut v = self.style.scrollbar_width();
             self.slider_f32("scrollbar width", 0.0, 30.0, &mut v);
@@ -1902,6 +1983,10 @@ impl Context {
             } else if self.panels.contains_id(self.hot_id) {
                 let panel = &self.panels[self.hot_id];
                 self.active_id = panel.root;
+
+                if !panel.flags.has(PanelFlags::ONLY_MOVE_FROM_TITLEBAR) {
+                    self.active_id = panel.move_id;
+                }
             }
             self.active_panel_id = self.hot_panel_id;
 
@@ -2074,6 +2159,8 @@ impl Context {
         // println!("draw_list:\n{:#?}", draw_list);
         // for cmd in &draw_list.cmd_buffer
 
+        // println!("{:#?}", draw_list);
+
         for cmd in draw_list.commands().iter() {
             let vtx = &draw_list.vtx_slice(cmd.vtx_offset..cmd.vtx_offset + cmd.vtx_count);
             let idx = &draw_list.idx_slice(cmd.idx_offset..cmd.idx_offset + cmd.idx_count);
@@ -2086,6 +2173,7 @@ impl Context {
             clip.min = clip.min.max(Vec2::ZERO);
             clip.max = clip.max.min(screen_size);
 
+            // draw_buff.set_clip_rect(cmd.clip_rect);
             if cmd.clip_rect_used {
                 draw_buff.set_clip_rect(cmd.clip_rect);
             } else if !draw_buff.current_clip_rect().contains_rect(clip) {
@@ -2133,13 +2221,11 @@ impl Context {
             let p = &self.panels[id];
 
             if p.flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
-                continue
+                continue;
             }
 
-            Self::build_draw_list(draw_buff, &p.draw_list, self.draw.screen_size);
-            Self::build_draw_list(draw_buff, &p.draw_list_over, self.draw.screen_size);
-
-            // self.build_draw_list(&draw_list);
+            Self::build_draw_list(draw_buff, &p.drawlist, self.draw.screen_size);
+            Self::build_draw_list(draw_buff, &p.drawlist_over, self.draw.screen_size);
         }
 
         self.upload_draw_data();
@@ -2154,30 +2240,29 @@ impl Context {
             let p = &self.panels[id];
 
             if p.flags.has(PanelFlags::USE_PARENT_DRAWLIST) {
-                continue
+                continue;
             }
 
-            let draw_list = &p.draw_list;
+            let draw_list = &p.drawlist;
             Self::build_debug_draw_list(draw_buff, &draw_list, self.draw.screen_size);
         }
         self.upload_draw_data();
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Panel {
     pub name: String,
     pub id: Id,
+    /// set active_id to this id to start dragging the panel
     pub move_id: Id,
-    // TODO[NOTE]: implement
-    pub close_id: Id,
     pub flags: PanelFlags,
 
     pub root: Id,
-    pub nav_root: Id,
-
+    // pub nav_root: Id,
     pub parent_id: Id,
     pub child_id: Id,
+    pub children: Vec<Id>,
 
     pub padding: f32,
     pub titlebar_height: f32,
@@ -2187,7 +2272,7 @@ pub struct Panel {
 
     /// pos of the panel at draw time
     ///
-    /// preserved over frames
+    /// preserved over frames, does not include outline
     pub pos: Vec2,
 
     /// size of the panel at draw time
@@ -2197,7 +2282,11 @@ pub struct Panel {
 
     /// full size of the panel, i.e. from top left to bottom right corner, including the titlebar
     ///
+    /// does not include outline
     pub full_size: Vec2,
+
+    pub full_rect: Rect,
+    pub clip_rect: Rect,
 
     // TODO[CHECK]: currently only used when placing the items. i.e. cursor position is not offset
     // by scroll, scroll is only added when generating the item rectangle
@@ -2230,29 +2319,29 @@ pub struct Panel {
     pub is_window_panel: bool,
 
     // try to not borrow outside of impl Panel { ... }
-    pub draw_list: DrawList,
-    pub draw_list_over: DrawList,
+    pub drawlist: DrawList,
+    pub drawlist_over: DrawList,
     pub id_stack: RefCell<Vec<Id>>,
     pub _cursor: RefCell<Cursor>,
     pub scroll_offset: f32,
 }
 
-impl fmt::Debug for Panel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Panel")
-            .field("name", &self.name)
-            .field("id", &format!("{}", self.id))
-            .field("order", &self.draw_order)
-            .field("pos", &self.pos)
-            .field("size", &self.size)
-            .field("full_size", &self.size)
-            .field("content_size", &self.size)
-            .field("exeplicit_size", &self.explicit_size)
-            .field("min_size", &self.min_size)
-            .field("max_size", &self.max_size)
-            .finish_non_exhaustive()
-    }
-}
+// impl fmt::Debug for Panel {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.debug_struct("Panel")
+//             .field("name", &self.name)
+//             .field("id", &format!("{}", self.id))
+//             .field("order", &self.draw_order)
+//             .field("pos", &self.pos)
+//             .field("size", &self.size)
+//             .field("full_size", &self.size)
+//             .field("content_size", &self.size)
+//             .field("exeplicit_size", &self.explicit_size)
+//             .field("min_size", &self.min_size)
+//             .field("max_size", &self.max_size)
+//             .finish_non_exhaustive()
+//     }
+// }
 
 impl Panel {
     pub fn new(name: impl Into<String>) -> Self {
@@ -2263,8 +2352,9 @@ impl Panel {
             id,
             parent_id: Id::NULL,
             child_id: Id::NULL,
+            children: vec![],
             root: Id::NULL,
-            nav_root: Id::NULL,
+            // nav_root: Id::NULL,
             flags: PanelFlags::NONE,
             padding: 0.0,
             scrollbar_width: 0.0,
@@ -2277,13 +2367,14 @@ impl Panel {
 
             full_content_size: Vec2::ZERO,
             full_size: Vec2::ZERO,
+            full_rect: Rect::ZERO,
+            clip_rect: Rect::ZERO,
             explicit_size: Vec2::NAN,
             outline_offset: 0.0,
             draw_order: 0,
             // bg_color: RGBA::ZERO,
             titlebar_height: 0.0,
             move_id: Id::NULL,
-            close_id: Id::NULL,
             size: Vec2::ZERO,
             min_size: Vec2::ZERO,
             max_size: Vec2::ZERO,
@@ -2294,8 +2385,8 @@ impl Panel {
             close_pressed: false,
             is_window_panel: false,
 
-            draw_list: DrawList::new(),
-            draw_list_over: DrawList::new(),
+            drawlist: DrawList::new(),
+            drawlist_over: DrawList::new(),
             id_stack: RefCell::new(Vec::new()),
             _cursor: RefCell::new(Cursor::default()),
             scroll_offset: 0.0,
@@ -2459,7 +2550,7 @@ impl Panel {
     }
 
     pub fn current_clip_rect(&self) -> Rect {
-        self.draw_list.current_clip_rect()
+        self.drawlist.current_clip_rect()
     }
 
     pub fn push_id(&self, id: Id) {
@@ -2481,8 +2572,8 @@ impl Panel {
     }
 
     pub fn clear_temp_data(&mut self) {
-        self.draw_list.clear();
-        self.draw_list_over.clear();
+        self.drawlist.clear();
+        self.drawlist_over.clear();
         self.root = Id::NULL;
     }
 
@@ -3485,8 +3576,11 @@ macros::flags!(PanelFlags:
     DRAW_H_SCROLLBAR,
     DRAW_V_SCROLLBAR,
     DONT_KEEP_SCROLLBAR_PAD,
-    USE_PARENT_DRAWLIST,
     DONT_CLIP_CONTENT,
+
+    USE_PARENT_DRAWLIST,
+    USE_PARENT_CLIP,
+    IS_CHILD,
 );
 
 macros::flags!(TextInputFlags:
@@ -3496,6 +3590,11 @@ macros::flags!(TextInputFlags:
 
 macros::flags!(
     Signal:
+
+    JUST_PRESSED_LEFT,
+    JUST_PRESSED_MIDDLE,
+    JUST_PRESSED_RIGHT,
+    JUST_PRESSED_KEYBOARD,
 
     PRESSED_LEFT,
     PRESSED_MIDDLE,
@@ -3543,6 +3642,7 @@ macro_rules! sig_fn {
 
 sig_fn!(hovering => HOVERING);
 sig_fn!(mouse_over => MOUSE_OVER);
+sig_fn!(just_pressed => JUST_PRESSED_LEFT, JUST_PRESSED_KEYBOARD);
 sig_fn!(pressed => PRESSED_LEFT, PRESSED_KEYBOARD);
 sig_fn!(clicked => CLICKED_LEFT, PRESSED_KEYBOARD);
 sig_fn!(double_clicked => DOUBLE_CLICKED_LEFT);
@@ -3591,7 +3691,7 @@ impl Default for DrawCmd {
             vtx_count: 0,
             idx_offset: 0,
             idx_count: 0,
-            clip_rect: Rect::ZERO,
+            clip_rect: Rect::NAN,
             clip_rect_used: false,
         }
     }
@@ -3600,12 +3700,16 @@ impl Default for DrawCmd {
 #[derive(Clone, Default, Debug)]
 pub struct DrawList {
     pub data: Rc<RefCell<DrawListData>>,
+    pub draw_clip_rect: bool,
 }
 
 impl DrawList {
     pub fn new() -> Self {
         let data = Rc::new(RefCell::new(DrawListData::new()));
-        Self { data }
+        Self {
+            data,
+            draw_clip_rect: false,
+        }
     }
 
     pub fn commands(&self) -> Ref<'_, [DrawCmd]> {
@@ -3621,12 +3725,11 @@ impl DrawList {
     }
 
     pub fn current_clip_rect(&self) -> Rect {
-        self.data
-            .borrow()
-            .clip_stack
-            .last()
-            .copied()
-            .unwrap_or(Rect::INFINITY)
+        self.data.borrow().clip_rect
+        // .clip_stack
+        // .last()
+        // .copied()
+        // .unwrap_or(Rect::INFINITY)
     }
 
     pub fn add_draw_rect(&self, rect: DrawRect) {
@@ -3662,8 +3765,18 @@ impl DrawList {
         self.data.borrow_mut().pop_clip_rect()
     }
 
+    pub fn push_merged_clip_rect(&self, rect: Rect) {
+        self.data.borrow_mut().push_merged_clip_rect(rect);
+        if self.draw_clip_rect {
+            self.add_draw_rect(rect.draw_rect().outline(Outline::inner(RGBA::RED, 2.0)));
+        }
+    }
+
     pub fn push_clip_rect(&self, rect: Rect) {
-        self.data.borrow_mut().push_clip_rect(rect)
+        self.data.borrow_mut().push_clip_rect(rect);
+        if self.draw_clip_rect {
+            self.add_draw_rect(rect.draw_rect().outline(Outline::inner(RGBA::RED, 2.0)));
+        }
     }
     // pub fn vertices(&self) -> Ref<'_, [Vertex]> {
     //     Ref::map(self.data.borrow(), |data| &data.vtx_buffer)
@@ -3796,6 +3909,7 @@ pub struct DrawListData {
 
     pub resolution: f32,
     pub path: Vec<Vec2>,
+    pub clip_rect: Rect,
     pub clip_stack: Vec<Rect>,
 
     pub circle_max_err: f32,
@@ -3823,6 +3937,7 @@ impl Default for DrawListData {
             resolution: 20.0,
             path: vec![],
             clip_stack: vec![],
+            clip_rect: Rect::INFINITY,
 
             circle_max_err: 0.3,
             clip_content: true,
@@ -3858,31 +3973,44 @@ impl DrawListData {
             log::warn!("zero clip rect set");
         }
         let cmd = self.current_draw_cmd();
-        if cmd.clip_rect == Rect::ZERO {
+
+        if cmd.clip_rect.is_nan() {
             cmd.clip_rect = rect;
         } else if cmd.clip_rect != rect {
-            let cmd = self.begin_draw_cmd();
+            let cmd = self.begin_new_draw_cmd();
             cmd.clip_rect = rect;
+            cmd.clip_rect_used = false;
         }
     }
 
-    // TODO[NOTE]: during drawing try to clip on cpu side. if all was clipped manually we dont need
-    // to add another render pass
+    pub fn push_merged_clip_rect(&mut self, rect: Rect) {
+        if !self.clip_content {
+            return;
+        }
+        let curr_clip = self.clip_rect;
+        let clip = rect.intersect(curr_clip);
+        self.clip_stack.push(self.clip_rect);
+        self.set_clip_rect(clip);
+        self.clip_rect = clip;
+    }
+
     pub fn push_clip_rect(&mut self, rect: Rect) {
         if !self.clip_content {
             return;
         }
-        self.clip_stack.push(rect);
+        self.clip_stack.push(self.clip_rect);
         self.set_clip_rect(rect);
+        self.clip_rect = rect;
     }
 
     pub fn pop_clip_rect(&mut self) -> Rect {
         if !self.clip_content {
             return Rect::INFINITY;
         }
-        let rect = self.clip_stack.pop().unwrap();
-        self.set_clip_rect(rect);
-        rect
+        // let rect = self.clip_stack.pop().unwrap();
+        self.clip_rect = self.clip_stack.pop().unwrap();
+        self.set_clip_rect(self.clip_rect);
+        self.clip_rect
     }
 
     pub fn current_draw_cmd(&mut self) -> &mut DrawCmd {
@@ -3892,20 +4020,27 @@ impl DrawListData {
         self.cmd_buffer.last_mut().unwrap()
     }
 
-    pub fn current_clip_rect(&self) -> Rect {
-        self.clip_stack.last().copied().unwrap_or(Rect::INFINITY)
-    }
+    // pub fn current_clip_rect(&self) -> Rect {
+    //     // *self.clip_stack.last().unwrap()
+    //     self.clip_stack.last().copied().unwrap_or(Rect::INFINITY)
+    // }
 
     pub fn finish_draw_cmd(&mut self) {
         if self.cmd_buffer.is_empty() {
             log::warn!("finishing empty draw command");
         }
         // finish by starting a new command
-        let _ = self.begin_draw_cmd();
+        let _ = self.begin_new_draw_cmd();
     }
 
-    pub fn begin_draw_cmd(&mut self) -> &mut DrawCmd {
+    pub fn begin_new_draw_cmd(&mut self) -> &mut DrawCmd {
         let last = self.cmd_buffer.last().copied();
+        // if let Some(last) = last {
+        //     if last.vtx_count == 0 {
+        //         return self.cmd_buffer.last_mut().unwrap();
+        //     }
+        // }
+
         self.cmd_buffer.push(DrawCmd::default());
         let cmd = self.cmd_buffer.last_mut().unwrap();
         cmd.vtx_offset = self.vtx_buffer.len();
@@ -3914,6 +4049,7 @@ impl DrawListData {
         if let Some(last) = last {
             cmd.texture_id = last.texture_id;
             cmd.clip_rect = last.clip_rect;
+            cmd.clip_rect_used = last.clip_rect_used;
         }
         cmd
     }
@@ -3923,13 +4059,18 @@ impl DrawListData {
             return;
         }
         let cmd = self.current_draw_cmd();
+
+        if cmd.texture_id == 0 {
+            cmd.texture_id = tex_id;
+            return;
+        }
         // TODO[CHECK]: is this valid?
         // if cmd.texture_id == 0 {
         //     cmd.texture_id = tex_id;
         // }
 
         if cmd.texture_id != tex_id {
-            let cmd = self.begin_draw_cmd();
+            let cmd = self.begin_new_draw_cmd();
             cmd.texture_id = tex_id;
         }
     }
@@ -3979,206 +4120,206 @@ impl DrawListData {
     //     }
     // }
 
-    #[inline]
-    pub fn push_clipped_vtx_idx(&mut self, vtx: &[Vertex], idx: &[u32]) {
-        let cmd = self.current_draw_cmd();
-        let base = cmd.vtx_count as u32;
-        let clip = self.current_clip_rect();
+    //     #[inline]
+    //     pub fn push_clipped_vtx_idx(&mut self, vtx: &[Vertex], idx: &[u32]) {
+    //         let cmd = self.current_draw_cmd();
+    //         let base = cmd.vtx_count as u32;
+    //         let clip = self.current_clip_rect();
 
-        fn lerp(a: f32, b: f32, t: f32) -> f32 {
-            a + (b - a) * t
-        }
+    //         fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    //             a + (b - a) * t
+    //         }
 
-        fn interp_vertex(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
-            let mut out = a.clone();
-            out.pos.x = lerp(a.pos.x, b.pos.x, t);
-            out.pos.y = lerp(a.pos.y, b.pos.y, t);
-            out.uv.x = lerp(a.uv.x, b.uv.x, t);
-            out.uv.y = lerp(a.uv.y, b.uv.y, t);
-            out.col = a.col.lerp(b.col, t);
-            out
-        }
+    //         fn interp_vertex(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
+    //             let mut out = a.clone();
+    //             out.pos.x = lerp(a.pos.x, b.pos.x, t);
+    //             out.pos.y = lerp(a.pos.y, b.pos.y, t);
+    //             out.uv.x = lerp(a.uv.x, b.uv.x, t);
+    //             out.uv.y = lerp(a.uv.y, b.uv.y, t);
+    //             out.col = a.col.lerp(b.col, t);
+    //             out
+    //         }
 
-        // Pre-allocate and reuse temporary buffers to avoid per-triangle allocations
-        let tri_count = idx.len() / 3;
-        let mut out_vtxs: Vec<Vertex> = Vec::with_capacity(tri_count * 6); // triangle clipped -> <= ~6 verts typically
-        let mut out_idx: Vec<u32> = Vec::with_capacity(tri_count * 6);
-        let mut poly: Vec<Vertex> = Vec::with_capacity(8);
-        let mut tmp: Vec<Vertex> = Vec::with_capacity(8);
+    //         // Pre-allocate and reuse temporary buffers to avoid per-triangle allocations
+    //         let tri_count = idx.len() / 3;
+    //         let mut out_vtxs: Vec<Vertex> = Vec::with_capacity(tri_count * 6); // triangle clipped -> <= ~6 verts typically
+    //         let mut out_idx: Vec<u32> = Vec::with_capacity(tri_count * 6);
+    //         let mut poly: Vec<Vertex> = Vec::with_capacity(8);
+    //         let mut tmp: Vec<Vertex> = Vec::with_capacity(8);
 
-        for tri in idx.chunks_exact(3) {
-            let i0 = tri[0] as usize;
-            let i1 = tri[1] as usize;
-            let i2 = tri[2] as usize;
-            let v0 = vtx[i0].clone();
-            let v1 = vtx[i1].clone();
-            let v2 = vtx[i2].clone();
+    //         for tri in idx.chunks_exact(3) {
+    //             let i0 = tri[0] as usize;
+    //             let i1 = tri[1] as usize;
+    //             let i2 = tri[2] as usize;
+    //             let v0 = vtx[i0].clone();
+    //             let v1 = vtx[i1].clone();
+    //             let v2 = vtx[i2].clone();
 
-            // trivial reject
-            if (v0.pos.x < clip.min.x && v1.pos.x < clip.min.x && v2.pos.x < clip.min.x)
-                || (v0.pos.x > clip.max.x && v1.pos.x > clip.max.x && v2.pos.x > clip.max.x)
-                || (v0.pos.y < clip.min.y && v1.pos.y < clip.min.y && v2.pos.y < clip.min.y)
-                || (v0.pos.y > clip.max.y && v1.pos.y > clip.max.y && v2.pos.y > clip.max.y)
-            {
-                continue;
-            }
+    //             // trivial reject
+    //             if (v0.pos.x < clip.min.x && v1.pos.x < clip.min.x && v2.pos.x < clip.min.x)
+    //                 || (v0.pos.x > clip.max.x && v1.pos.x > clip.max.x && v2.pos.x > clip.max.x)
+    //                 || (v0.pos.y < clip.min.y && v1.pos.y < clip.min.y && v2.pos.y < clip.min.y)
+    //                 || (v0.pos.y > clip.max.y && v1.pos.y > clip.max.y && v2.pos.y > clip.max.y)
+    //             {
+    //                 continue;
+    //             }
 
-            poly.clear();
-            poly.push(v0);
-            poly.push(v1);
-            poly.push(v2);
+    //             poly.clear();
+    //             poly.push(v0);
+    //             poly.push(v1);
+    //             poly.push(v2);
 
-            // Helper macro-like inline to clip one edge into tmp, then swap poly/tmp
-            macro_rules! clip_edge {
-                ($inside:expr, $intersect_t:expr) => {
-                    tmp.clear();
-                    if !poly.is_empty() {
-                        for i in 0..poly.len() {
-                            let a = &poly[i];
-                            let b = &poly[(i + 1) % poly.len()];
-                            let ina = $inside(a);
-                            let inb = $inside(b);
-                            if ina && inb {
-                                tmp.push(b.clone());
-                            } else if ina && !inb {
-                                let t = $intersect_t(a, b);
-                                tmp.push(interp_vertex(a, b, t));
-                            } else if !ina && inb {
-                                let t = $intersect_t(a, b);
-                                tmp.push(interp_vertex(a, b, t));
-                                tmp.push(b.clone());
-                            }
-                        }
-                    }
-                    std::mem::swap(&mut poly, &mut tmp);
-                };
-            }
+    //             // Helper macro-like inline to clip one edge into tmp, then swap poly/tmp
+    //             macro_rules! clip_edge {
+    //                 ($inside:expr, $intersect_t:expr) => {
+    //                     tmp.clear();
+    //                     if !poly.is_empty() {
+    //                         for i in 0..poly.len() {
+    //                             let a = &poly[i];
+    //                             let b = &poly[(i + 1) % poly.len()];
+    //                             let ina = $inside(a);
+    //                             let inb = $inside(b);
+    //                             if ina && inb {
+    //                                 tmp.push(b.clone());
+    //                             } else if ina && !inb {
+    //                                 let t = $intersect_t(a, b);
+    //                                 tmp.push(interp_vertex(a, b, t));
+    //                             } else if !ina && inb {
+    //                                 let t = $intersect_t(a, b);
+    //                                 tmp.push(interp_vertex(a, b, t));
+    //                                 tmp.push(b.clone());
+    //                             }
+    //                         }
+    //                     }
+    //                     std::mem::swap(&mut poly, &mut tmp);
+    //                 };
+    //             }
 
-            // left  : x >= clip.min.x
-            clip_edge!(
-                |p: &Vertex| p.pos.x >= clip.min.x,
-                |a: &Vertex, b: &Vertex| {
-                    let dx = b.pos.x - a.pos.x;
-                    if dx.abs() < 1e-6 {
-                        0.0
-                    } else {
-                        (clip.min.x - a.pos.x) / dx
-                    }
-                    .clamp(0.0, 1.0)
-                }
-            );
-            if poly.len() < 3 {
-                continue;
-            }
+    //             // left  : x >= clip.min.x
+    //             clip_edge!(
+    //                 |p: &Vertex| p.pos.x >= clip.min.x,
+    //                 |a: &Vertex, b: &Vertex| {
+    //                     let dx = b.pos.x - a.pos.x;
+    //                     if dx.abs() < 1e-6 {
+    //                         0.0
+    //                     } else {
+    //                         (clip.min.x - a.pos.x) / dx
+    //                     }
+    //                     .clamp(0.0, 1.0)
+    //                 }
+    //             );
+    //             if poly.len() < 3 {
+    //                 continue;
+    //             }
 
-            // right : x <= clip.max.x
-            clip_edge!(
-                |p: &Vertex| p.pos.x <= clip.max.x,
-                |a: &Vertex, b: &Vertex| {
-                    let dx = b.pos.x - a.pos.x;
-                    if dx.abs() < 1e-6 {
-                        0.0
-                    } else {
-                        (clip.max.x - a.pos.x) / dx
-                    }
-                    .clamp(0.0, 1.0)
-                }
-            );
-            if poly.len() < 3 {
-                continue;
-            }
+    //             // right : x <= clip.max.x
+    //             clip_edge!(
+    //                 |p: &Vertex| p.pos.x <= clip.max.x,
+    //                 |a: &Vertex, b: &Vertex| {
+    //                     let dx = b.pos.x - a.pos.x;
+    //                     if dx.abs() < 1e-6 {
+    //                         0.0
+    //                     } else {
+    //                         (clip.max.x - a.pos.x) / dx
+    //                     }
+    //                     .clamp(0.0, 1.0)
+    //                 }
+    //             );
+    //             if poly.len() < 3 {
+    //                 continue;
+    //             }
 
-            // top   : y >= clip.min.y
-            clip_edge!(
-                |p: &Vertex| p.pos.y >= clip.min.y,
-                |a: &Vertex, b: &Vertex| {
-                    let dy = b.pos.y - a.pos.y;
-                    if dy.abs() < 1e-6 {
-                        0.0
-                    } else {
-                        (clip.min.y - a.pos.y) / dy
-                    }
-                    .clamp(0.0, 1.0)
-                }
-            );
-            if poly.len() < 3 {
-                continue;
-            }
+    //             // top   : y >= clip.min.y
+    //             clip_edge!(
+    //                 |p: &Vertex| p.pos.y >= clip.min.y,
+    //                 |a: &Vertex, b: &Vertex| {
+    //                     let dy = b.pos.y - a.pos.y;
+    //                     if dy.abs() < 1e-6 {
+    //                         0.0
+    //                     } else {
+    //                         (clip.min.y - a.pos.y) / dy
+    //                     }
+    //                     .clamp(0.0, 1.0)
+    //                 }
+    //             );
+    //             if poly.len() < 3 {
+    //                 continue;
+    //             }
 
-            // bottom: y <= clip.max.y
-            clip_edge!(
-                |p: &Vertex| p.pos.y <= clip.max.y,
-                |a: &Vertex, b: &Vertex| {
-                    let dy = b.pos.y - a.pos.y;
-                    if dy.abs() < 1e-6 {
-                        0.0
-                    } else {
-                        (clip.max.y - a.pos.y) / dy
-                    }
-                    .clamp(0.0, 1.0)
-                }
-            );
-            if poly.len() < 3 {
-                continue;
-            }
+    //             // bottom: y <= clip.max.y
+    //             clip_edge!(
+    //                 |p: &Vertex| p.pos.y <= clip.max.y,
+    //                 |a: &Vertex, b: &Vertex| {
+    //                     let dy = b.pos.y - a.pos.y;
+    //                     if dy.abs() < 1e-6 {
+    //                         0.0
+    //                     } else {
+    //                         (clip.max.y - a.pos.y) / dy
+    //                     }
+    //                     .clamp(0.0, 1.0)
+    //                 }
+    //             );
+    //             if poly.len() < 3 {
+    //                 continue;
+    //             }
 
-            let start = out_vtxs.len() as u32;
-            out_vtxs.extend_from_slice(&poly);
+    //             let start = out_vtxs.len() as u32;
+    //             out_vtxs.extend_from_slice(&poly);
 
-            let vcount = poly.len() as u32;
-            // fan-triangulate the clipped polygon
-            for i in 1..(vcount - 1) {
-                out_idx.push(base + start + 0);
-                out_idx.push(base + start + i);
-                out_idx.push(base + start + (i + 1));
-            }
-        }
+    //             let vcount = poly.len() as u32;
+    //             // fan-triangulate the clipped polygon
+    //             for i in 1..(vcount - 1) {
+    //                 out_idx.push(base + start + 0);
+    //                 out_idx.push(base + start + i);
+    //                 out_idx.push(base + start + (i + 1));
+    //             }
+    //         }
 
-        if !out_vtxs.is_empty() {
-            self.vtx_buffer.extend_from_slice(&out_vtxs);
-        }
-        if !out_idx.is_empty() {
-            self.idx_buffer.extend_from_slice(&out_idx);
-        }
+    //         if !out_vtxs.is_empty() {
+    //             self.vtx_buffer.extend_from_slice(&out_vtxs);
+    //         }
+    //         if !out_idx.is_empty() {
+    //             self.idx_buffer.extend_from_slice(&out_idx);
+    //         }
 
-        let cmd = self.current_draw_cmd();
-        cmd.vtx_count += out_vtxs.len();
-        cmd.idx_count += out_idx.len();
-    }
+    //         let cmd = self.current_draw_cmd();
+    //         cmd.vtx_count += out_vtxs.len();
+    //         cmd.idx_count += out_idx.len();
+    //     }
 
-    #[inline]
-    pub fn push_clipped_vtx_idx2(&mut self, vtx: &[Vertex], idx: &[u32]) {
-        let cmd = self.current_draw_cmd();
-        let base = cmd.vtx_count as u32;
-        let clip = self.current_clip_rect();
+    //     #[inline]
+    //     pub fn push_clipped_vtx_idx2(&mut self, vtx: &[Vertex], idx: &[u32]) {
+    //         let cmd = self.current_draw_cmd();
+    //         let base = cmd.vtx_count as u32;
+    //         let clip = self.current_clip_rect();
 
-        let mut kept: Vec<u32> = Vec::with_capacity(idx.len());
-        for tri in idx.chunks_exact(3) {
-            let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
-            let (v0, v1, v2) = (vtx[i0], vtx[i1], vtx[i2]);
+    //         let mut kept: Vec<u32> = Vec::with_capacity(idx.len());
+    //         for tri in idx.chunks_exact(3) {
+    //             let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+    //             let (v0, v1, v2) = (vtx[i0], vtx[i1], vtx[i2]);
 
-            if (v0.pos.x < clip.min.x && v1.pos.x < clip.min.x && v2.pos.x < clip.min.x)
-                || (v0.pos.x > clip.max.x && v1.pos.x > clip.max.x && v2.pos.x > clip.max.x)
-                || (v0.pos.y < clip.min.y && v1.pos.y < clip.min.y && v2.pos.y < clip.min.y)
-                || (v0.pos.y > clip.max.y && v1.pos.y > clip.max.y && v2.pos.y > clip.max.y)
-            {
-                continue;
-            }
+    //             if (v0.pos.x < clip.min.x && v1.pos.x < clip.min.x && v2.pos.x < clip.min.x)
+    //                 || (v0.pos.x > clip.max.x && v1.pos.x > clip.max.x && v2.pos.x > clip.max.x)
+    //                 || (v0.pos.y < clip.min.y && v1.pos.y < clip.min.y && v2.pos.y < clip.min.y)
+    //                 || (v0.pos.y > clip.max.y && v1.pos.y > clip.max.y && v2.pos.y > clip.max.y)
+    //             {
+    //                 continue;
+    //             }
 
-            kept.push(base + tri[0]);
-            kept.push(base + tri[1]);
-            kept.push(base + tri[2]);
-        }
+    //             kept.push(base + tri[0]);
+    //             kept.push(base + tri[1]);
+    //             kept.push(base + tri[2]);
+    //         }
 
-        self.vtx_buffer.extend_from_slice(vtx);
-        if !kept.is_empty() {
-            self.idx_buffer.extend_from_slice(&kept);
-        }
+    //         self.vtx_buffer.extend_from_slice(vtx);
+    //         if !kept.is_empty() {
+    //             self.idx_buffer.extend_from_slice(&kept);
+    //         }
 
-        let cmd = self.current_draw_cmd();
-        cmd.vtx_count += vtx.len();
-        cmd.idx_count += kept.len();
-    }
+    //         let cmd = self.current_draw_cmd();
+    //         cmd.vtx_count += vtx.len();
+    //         cmd.idx_count += kept.len();
+    //     }
 
     pub fn add_rect_rounded(
         &mut self,
@@ -4197,12 +4338,16 @@ impl DrawListData {
 
         let offset = Vec2::splat(outline.offset());
 
-        let clip = self.current_clip_rect();
-        if !(clip.contains(min - offset) || clip.contains(max + offset)) {
+        let clip = self.clip_rect;
+        let bb = Rect::from_min_max(min - offset, max + offset);
+        // if !(clip.contains(min - offset) || clip.contains(max + offset)) {
+        if !clip.overlaps(bb) {
             return;
-        } 
-        
-        if !clip.contains(min - offset) || !clip.contains(max + offset) {
+        }
+
+        // log::info!("clip?: clip: {clip}, bb: {bb}");
+        if !clip.contains(bb.min) || !clip.contains(bb.max) {
+            // log::info!("clipped: clip: {clip}, bb: {bb}");
             self.current_draw_cmd().clip_rect_used = true;
         }
 
@@ -4396,7 +4541,7 @@ impl DrawListData {
         self.add_simple_rect(min, max, uv_min, uv_max, tex_id, tint);
 
         if outline.width > 0.0 {
-            let clip = self.current_clip_rect();
+            let clip = self.clip_rect;
             if let Some(crect) = Rect::from_min_max(min, max).clip(clip) {
                 self.add_rect_outline(crect.min, crect.max, outline);
             }
@@ -4412,7 +4557,7 @@ impl DrawListData {
         tint: RGBA,
         outline: Outline,
     ) {
-        let clip = self.current_clip_rect();
+        let clip = self.clip_rect;
 
         // Draw outline background first
         let outset = outline.width * 0.5;
@@ -4462,7 +4607,7 @@ impl DrawListData {
         tex_id: u32,
         tint: RGBA,
     ) {
-        let clip = self.current_clip_rect();
+        let clip = self.clip_rect;
         let Some(crect) = Rect::from_min_max(min, max).clip(clip) else {
             return;
         };
@@ -5475,9 +5620,15 @@ impl RenderPassHandle for MergedDrawLists {
         // }
 
         // let (verts, indxs, clip) = self.call_list.get_draw_call_data(i).unwrap();
+        let mut i = 0;
+        // println!("n_calls: {}", self.call_list.calls.len());
         for call in &self.call_list.calls {
-            let clip = call.clip_rect;
+            // i += 1;
 
+            // if i != 2 && self.call_list.calls.len() == 3 {
+            //     continue
+            // }
+            let clip = call.clip_rect;
             rpass.set_bind_group(0, &bind_group, &[]);
             rpass.set_vertex_buffer(0, self.gpu_vertices.slice(..));
             rpass.set_index_buffer(self.gpu_indices.slice(..), wgpu::IndexFormat::Uint32);

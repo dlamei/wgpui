@@ -70,6 +70,10 @@ impl MouseState {
         self.buttons[btn].released
     }
 
+    pub fn just_pressed(&self, btn: MouseBtn) -> bool {
+        self.buttons[btn].just_pressed
+    }
+
     pub fn pressed(&self, btn: MouseBtn) -> bool {
         self.buttons[btn].pressed
     }
@@ -142,6 +146,7 @@ pub struct ButtonState {
     pub last_release_time: Option<Instant>,
     pub click_count: Option<(u16, Instant)>,
     pub pressed: bool,
+    pub just_pressed: bool,
     pub released: bool,
     pub dragging: bool,
     pub press_start_pos: Option<Vec2>,
@@ -154,6 +159,8 @@ impl fmt::Display for ButtonState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let status = if self.dragging {
             "dragging"
+        } else if self.just_pressed {
+            "just_pressed"
         } else if self.pressed {
             "pressed"
         } else if self.clicked() {
@@ -191,6 +198,7 @@ impl ButtonState {
             released: false,
             click_count: None,
             pressed: false,
+            just_pressed: false,
             dragging: false,
             press_start_pos: None,
             click_threshold: Duration::from_millis(200), // Max time for a click
@@ -201,6 +209,7 @@ impl ButtonState {
 
     pub fn end_frame(&mut self) {
         self.released = false;
+        self.just_pressed = false;
 
         let now = Instant::now();
         if let Some((_, click_time)) = self.click_count {
@@ -229,6 +238,7 @@ impl ButtonState {
         if press && !self.pressed {
             // Button just pressed
             self.pressed = true;
+            self.just_pressed = true;
             self.last_press_time = now;
             self.press_start_pos = Some(pos);
         } else if !press && self.pressed {
@@ -236,6 +246,7 @@ impl ButtonState {
             self.dragging = false;
             self.released = true;
             self.pressed = false;
+            self.just_pressed = false;
             self.last_release_time = Some(now);
 
             let press_duration = now.duration_since(self.last_press_time);
@@ -323,6 +334,7 @@ impl ButtonState {
     pub fn reset(&mut self) {
         self.click_count = None;
         self.pressed = false;
+        self.just_pressed = false;
         self.press_start_pos = None;
     }
 }

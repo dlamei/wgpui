@@ -344,9 +344,6 @@ impl App {
     fn on_update(&mut self, event_loop: &ActiveEventLoop) {
         let ui = &mut self.ui;
         ui.begin_frame();
-        ui.debug_window();
-        ui.end_frame(event_loop);
-        return;
 
         // if let Some(p) = ui.get_panel_with_name("Debug") {
         //     ui.next.min_size = p.full_size;
