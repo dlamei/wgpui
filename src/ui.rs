@@ -1273,7 +1273,7 @@ impl Context {
                     if is_split {
                         let split_dock_id = self.dock_tree.get_split_node(dock_id, dir);
                         assert!(!split_dock_id.is_null());
-                        let DockNodeKind::Split { ratio, .. } =
+                        let DockNodeKind::Split { pos, .. } =
                             self.dock_tree.nodes[split_dock_id].kind
                         else {
                             unreachable!()
@@ -1282,7 +1282,7 @@ impl Context {
                         self.panel_action = PanelAction::DragSplit {
                             dir,
                             dock_split_id: split_dock_id,
-                            prev_ratio: ratio,
+                            prev_pos: pos,
                         };
                     } else {
                         self.panel_action = PanelAction::Resize { dir, id, prev_rect };
@@ -1291,12 +1291,7 @@ impl Context {
             }
         }
 
-        if let PanelAction::DragSplit {
-            dir,
-            dock_split_id,
-            prev_ratio,
-        } = &self.panel_action
-        {
+        if let PanelAction::DragSplit { dir, dock_split_id, prev_pos } = &self.panel_action {
             if !self.mouse.pressed(MouseBtn::Left) {
                 self.set_cursor_icon(CursorIcon::Default);
                 self.panel_action = PanelAction::None;
@@ -1304,64 +1299,62 @@ impl Context {
             }
 
             let axis = dir.axis().unwrap();
-
-            let m_start = self
-                .mouse
-                .drag_start(MouseBtn::Left)
-                .unwrap_or(self.mouse.pos);
+            let m_start = self.mouse.drag_start(MouseBtn::Left).unwrap_or(self.mouse.pos);
             let m_delta = (self.mouse.pos - m_start)[axis as usize];
 
             let dock_split = &self.dock_tree.nodes[*dock_split_id];
             let split_rect = dock_split.rect;
             let split_size = split_rect.size()[axis as usize];
-            let DockNodeKind::Split {
-                children, ratio, ..
-            } = dock_split.kind
-            else {
-                panic!()
-            };
 
-            let split_range = self.dock_tree.get_split_range(*dock_split_id);
-            let tb_height = self.style.titlebar_height() + 5.0;
+            let min_size = self.style.titlebar_height() + 5.0;
+            let max_pos = split_size - min_size;
 
-            let prev_ratio_px = prev_ratio * split_size;
-            let new_ratio_px = prev_ratio_px + m_delta;
-            let new_ratio = new_ratio_px.min(split_range - tb_height).max(tb_height) / split_size;
+            let new_pos = (*prev_pos + m_delta).max(min_size).min(max_pos);
 
+            self.dock_tree.set_split_pos(*dock_split_id, new_pos);
 
-            for i in 0..=1 {
-                let sibling = &mut self.dock_tree.nodes[children[i]];
-                if let DockNodeKind::Split {
-                    ratio: sibling_ratio,
-                    axis: sibling_axis,
-                    ..
-                } = &mut sibling.kind
-                {
-                    if axis != *sibling_axis {
-                        continue;
-                    }
-
-                    let i_f = i as f32;
-                    let sibling_size = sibling.rect.size()[axis as usize];
-                    let sibling_ratio_px = (i_f - *sibling_ratio) * sibling_size;
-
-                    let new_sibling_size = (i_f - new_ratio) * split_size;
-
-                    let new_sibling_ratio = (i_f - sibling_ratio_px / new_sibling_size);
-                    *sibling_ratio = new_sibling_ratio;
-                }
-            }
-
-            let DockNodeKind::Split {
-                children, ratio, ..
-            } = &mut self.dock_tree.nodes[*dock_split_id].kind
-            else {
-                panic!()
-            };
-
-            *ratio = new_ratio;
-            self.dock_tree.recompute_rects(*dock_split_id, split_rect);
         }
+
+        // if let PanelAction::DragSplit {
+        //     dir,
+        //     dock_split_id,
+        //     prev_pos,
+        // } = &self.panel_action
+        // {
+        //     if !self.mouse.pressed(MouseBtn::Left) {
+        //         self.set_cursor_icon(CursorIcon::Default);
+        //         self.panel_action = PanelAction::None;
+        //         return;
+        //     }
+
+        //     let axis = dir.axis().unwrap();
+
+        //     let m_start = self
+        //         .mouse
+        //         .drag_start(MouseBtn::Left)
+        //         .unwrap_or(self.mouse.pos);
+        //     let m_delta = (self.mouse.pos - m_start)[axis as usize];
+
+        //     let dock_split = &self.dock_tree.nodes[*dock_split_id];
+        //     let split_rect = dock_split.rect;
+        //     let split_size = split_rect.size()[axis as usize];
+        //     let DockNodeKind::Split {
+        //         children, ratio, ..
+        //     } = dock_split.kind
+        //     else {
+        //         panic!()
+        //     };
+
+        //     let split_range = self.dock_tree.get_split_range(*dock_split_id);
+        //     let tb_height = self.style.titlebar_height() + 5.0;
+
+        //     let prev_ratio_px = prev_pos * split_size;
+        //     let new_ratio_px = prev_ratio_px + m_delta;
+        //     let new_ratio = new_ratio_px.min(split_range - tb_height).max(tb_height) / split_size;
+
+
+        //     self.dock_tree.set_split_ratio(*dock_split_id, new_ratio);
+        // }
 
         if let PanelAction::Resize { dir, id, prev_rect } = &self.panel_action {
             if !self.mouse.pressed(MouseBtn::Left) {
@@ -3534,7 +3527,8 @@ pub enum DockNodeKind {
         // first id is top / left, second id is bottom / right depending on axis
         children: [Id; 2],
         axis: Axis,
-        ratio: f32,
+        // pos relative to parent rect
+        pos: f32,
     },
     Leaf,
 }
@@ -3576,23 +3570,14 @@ impl DockTree {
         n.rect = root_rect;
 
         match n.kind {
-            DockNodeKind::Split {
-                children: [n1, n2],
-                axis,
-                ratio,
-            } => {
-                let mut n1_size = root_rect.size();
-                let mut n2_size = root_rect.size();
-                n1_size[axis as usize] *= ratio;
-                n2_size[axis as usize] *= 1.0 - ratio;
-
+            DockNodeKind::Split { children: [n1, n2], axis, pos } => {
                 let mut n1_rect = root_rect;
-                n1_rect.set_size(n1_size);
-
                 let mut n2_rect = root_rect;
-                // shift min of n2 along the split axis by n1's size in that axis
-                n2_rect.min[axis as usize] += n1_size[axis as usize];
-                n2_rect.set_size(n2_size);
+
+                // Set n1 to [root_rect.min, split_pos]
+                n1_rect.max[axis as usize] = root_rect.min[axis as usize] + pos;
+                // Set n2 to [split_pos, root_rect.max]
+                n2_rect.min[axis as usize] = root_rect.min[axis as usize] + pos;
 
                 self.recompute_rects(n1, n1_rect);
                 self.recompute_rects(n2, n2_rect);
@@ -3602,6 +3587,101 @@ impl DockTree {
             }
         }
     }
+
+    pub fn set_split_pos(&mut self, node_id: Id, new_pos: f32) {
+        let node = &mut self.nodes[node_id];
+        let DockNodeKind::Split { children, axis, pos: old_pos } = node.kind else {
+            panic!("set_split_pos called on non-split node");
+        };
+
+        let n_rect = node.rect;
+        let delta = new_pos - old_pos;
+
+        // Update split position
+        self.nodes[node_id].kind = DockNodeKind::Split {
+            children,
+            axis,
+            pos: new_pos,
+        };
+
+        // Recompute rects, but adjust child split positions to maintain absolute positions
+        self.recompute_rects_preserve_absolute(node_id, n_rect, axis, delta);
+    }
+
+    // Helper that preserves absolute screen positions of nested splits
+    fn recompute_rects_preserve_absolute(&mut self, node_id: Id, root_rect: Rect, changed_axis: Axis, delta: f32) {
+        let n = &mut self.nodes[node_id];
+        n.rect = root_rect;
+
+        match n.kind {
+            DockNodeKind::Split { children: [n1, n2], axis, pos } => {
+                let mut n1_rect = root_rect;
+                let mut n2_rect = root_rect;
+
+                // Set n1 to [root_rect.min, split_pos]
+                n1_rect.max[axis as usize] = root_rect.min[axis as usize] + pos;
+                // Set n2 to [split_pos, root_rect.max]
+                n2_rect.min[axis as usize] = root_rect.min[axis as usize] + pos;
+
+                // If this split is on the same axis as the changed split above,
+                // adjust positions in the affected child to preserve absolute positions
+                if axis == changed_axis {
+                    // n2 (right/bottom child) got shifted by delta, need to compensate
+                    self.adjust_child_splits(n2, changed_axis, -delta);
+                }
+
+                self.recompute_rects_preserve_absolute(n1, n1_rect, changed_axis, delta);
+                self.recompute_rects_preserve_absolute(n2, n2_rect, changed_axis, delta);
+            }
+            DockNodeKind::Leaf => {
+                n.rect = root_rect;
+            }
+        }
+    }
+
+    // Recursively adjust split positions in a subtree to compensate for parent movement
+    fn adjust_child_splits(&mut self, node_id: Id, adjust_axis: Axis, adjustment: f32) {
+        let node = &self.nodes[node_id];
+
+        match node.kind {
+            DockNodeKind::Split { children: [n1, n2], axis, pos } => {
+                // Only adjust if this split is on the same axis
+                if axis == adjust_axis {
+                    let new_pos = pos + adjustment;
+                    self.nodes[node_id].kind = DockNodeKind::Split {
+                        children: [n1, n2],
+                        axis,
+                        pos: new_pos,
+                    };
+                }
+
+                // Recurse into children
+                self.adjust_child_splits(n1, adjust_axis, adjustment);
+                self.adjust_child_splits(n2, adjust_axis, adjustment);
+            }
+            DockNodeKind::Leaf => {}
+        }
+    }
+
+    // pub fn set_split_pos(&mut self, node_id: Id, new_pos: f32) {
+    //     let node = &mut self.nodes[node_id];
+    //     let DockNodeKind::Split { children, axis, pos: _ } = node.kind else {
+    //         panic!("set_split_pos called on non-split node");
+    //     };
+
+    //     let n_rect = node.rect;
+
+    //     // Update split position
+    //     self.nodes[node_id].kind = DockNodeKind::Split {
+    //         children,
+    //         axis,
+    //         pos: new_pos,
+    //     };
+
+    //     // Recompute all rectangles from this node down
+    //     self.recompute_rects(node_id, n_rect);
+    // }
+
 
     pub fn add_root(&mut self, rect: Rect, panel_id: Id) -> Id {
         let id = Id::from_hash(&panel_id);
@@ -3706,94 +3786,60 @@ impl DockTree {
             Axis::X => r1.width() + r2.width(),
             Axis::Y => r1.height() + r2.height(),
         }
-    }
-
-    // pub fn get_split_range(&self, id: Id) -> f32 {
-    //     fn descend_to_leaf(tree: &DockTree, mut node_id: Id, child_idx: usize) -> Id {
-    //         loop {
-    //             let node = &tree.nodes[node_id];
-    //             match &node.kind {
-    //                 DockNodeKind::Split { children, .. } => {
-    //                     node_id = children[child_idx];
-    //                     // node_id = if prefer_rightmost {
-    //                     //     children[1]
-    //                     // } else {
-    //                     //     children[0]
-    //                     // };
-    //                 }
-    //                 DockNodeKind::Leaf => return node_id,
-    //             }
-    //         }
-    //     }
-
-    //     let split_node = self.nodes[id];
-    //     let DockNodeKind::Split { children, axis, .. } = split_node.kind else {
-    //         panic!()
-    //     };
-
-    //     let c1 = descend_to_leaf(self, children[0], 1);
-    //     let c2 = descend_to_leaf(self, children[1], 0);
-    //     let r1 = self.nodes[c1].rect;
-    //     let r2 = self.nodes[c2].rect;
-
-    //     match axis {
-    //         Axis::X => r2.right() - r1.left(),
-    //         Axis::Y => r2.bottom() - r1.top(),
-    //     }
-    // }
+}
 
 
 
-    pub fn get_split_node(&self, id: Id, dir: Dir) -> Id {
-        let (target_axis, c_idx) = match dir {
-            Dir::N => (Axis::Y, 1),
-            Dir::E => (Axis::X, 0),
-            Dir::S => (Axis::Y, 0),
-            Dir::W => (Axis::X, 1),
-            _ => panic!(),
-        };
+pub fn get_split_node(&self, id: Id, dir: Dir) -> Id {
+    let (target_axis, c_idx) = match dir {
+        Dir::N => (Axis::Y, 1),
+        Dir::E => (Axis::X, 0),
+        Dir::S => (Axis::Y, 0),
+        Dir::W => (Axis::X, 1),
+        _ => panic!(),
+    };
 
-        let mut cur = id;
-        while !cur.is_null() {
-            let node = &self.nodes[cur];
-            let parent = node.parent_id;
-            if parent.is_null() {
-                break;
-            }
-            let pnode = &self.nodes[parent];
-            if let DockNodeKind::Split { children, axis, .. } = &pnode.kind {
-                let child_index = if children[0] == cur {
-                    0
-                } else if children[1] == cur {
-                    1
-                } else {
-                    cur = parent;
-                    continue;
-                };
-                if *axis == target_axis && child_index == c_idx {
-                    return parent;
-                }
-            }
-            cur = parent;
+    let mut cur = id;
+    while !cur.is_null() {
+        let node = &self.nodes[cur];
+        let parent = node.parent_id;
+        if parent.is_null() {
+            break;
         }
-        Id::NULL
-    }
-
-    pub fn get_tree(&mut self, mut node_id: Id) -> Vec<Id> {
-        let root = self.get_root(node_id);
-        let mut out = Vec::new();
-        let mut stack = vec![root];
-
-        while let Some(cur) = stack.pop() {
-            out.push(cur);
-            match &self.nodes[cur].kind {
-                DockNodeKind::Split { children, .. } => {
-                    stack.push(children[1]);
-                    stack.push(children[0]);
-                }
-                DockNodeKind::Leaf => {}
+        let pnode = &self.nodes[parent];
+        if let DockNodeKind::Split { children, axis, .. } = &pnode.kind {
+            let child_index = if children[0] == cur {
+                0
+            } else if children[1] == cur {
+                1
+            } else {
+                cur = parent;
+                continue;
+            };
+            if *axis == target_axis && child_index == c_idx {
+                return parent;
             }
         }
+        cur = parent;
+    }
+    Id::NULL
+}
+
+pub fn get_tree(&mut self, mut node_id: Id) -> Vec<Id> {
+    let root = self.get_root(node_id);
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+
+    while let Some(cur) = stack.pop() {
+        out.push(cur);
+        match &self.nodes[cur].kind {
+            DockNodeKind::Split { children, .. } => {
+                stack.push(children[1]);
+                stack.push(children[0]);
+            }
+            DockNodeKind::Leaf => {}
+        }
+    }
 
         out
     }
@@ -3806,6 +3852,8 @@ impl DockTree {
 
         node.id
     }
+
+
 
     pub fn merge_nodes(&mut self, target_id: Id, docking_id: Id, mut ratio: f32, dir: Dir) -> Id {
         assert!(ratio < 1.0 && ratio > 0.0);
@@ -3828,6 +3876,7 @@ impl DockTree {
             _ => (),
         }
 
+
         // set docking node's parent to the target (assumes docking node is a root or otherwise handled by caller)
         self.nodes[docking_id].parent_id = target_id;
 
@@ -3844,11 +3893,12 @@ impl DockTree {
         };
 
         // replace target node kind with a split and insert the preserved old leaf
+        let target_rect = self.nodes[target_id].rect;
         self.nodes[target_id].panel_id = Id::NULL;
         self.nodes[target_id].kind = DockNodeKind::Split {
             children: [c0, c1],
             axis,
-            ratio,
+            pos: ratio * target_rect.size()[axis as usize],
         };
 
         self.nodes.insert(new_old_id, old_leaf);
@@ -3946,106 +3996,6 @@ impl DockTree {
         }
     }
 
-    // pub fn undock_node(&mut self, node_id: Id, panels: &mut IdMap<Panel>) {
-    //     let n = self.nodes[node_id];
-    //     assert!(panels[n.panel_id].dock_id == node_id);
-    //     assert!(n.kind == DockNodeKind::Leaf);
-
-    //     if n.parent_id.is_null() {
-    //         log::warn!("undocking single leaf node");
-    //         self.nodes.remove(n.id);
-    //         return
-    //     }
-
-    //     let mut p_n = &mut self.nodes[n.parent_id];
-    //     match p_n.kind {
-    //         DockNodeKind::Split { children, axis, ratio } => {
-    //             let rem_id = if children[0] == node_id {
-    //                 children[1]
-    //             } else {
-    //                 assert!(children[1] == node_id);
-    //                 children[0]
-    //             };
-
-    //             panels[n.panel_id].dock_id = Id::NULL;
-    //             p_n.kind = DockNodeKind::Leaf;
-    //             assert!(p_n.panel_id.is_null());
-
-    //             let rem_panel_id = self.nodes[rem_id].panel_id;
-    //             let rem_panel = &mut panels[rem_panel_id];
-    //             assert!(rem_panel.dock_id == rem_id);
-    //             rem_panel.dock_id = n.parent_id;
-
-    //             self.nodes.remove(rem_id);
-    //             self.nodes.remove(n.id);
-
-    //             // if p_n.parent.is_null() {
-    //             //     // remove reminding if it is root, no dangling node
-    //             //     panels[p_n.panel_id].dock_id = Id::NULL;
-    //             //     self.nodes.remove(rem_id);
-    //             // } else {
-    //             // // promote sibling to parent
-    //             //     p_n.kind = DockNodeKind::Leaf;
-    //             //     self.nodes.remove(rem_id);
-    //             //     // self.nodes.insert(rem_id, p_n);
-    //             //     // self.nodes.remove(node_id);
-    //             //     panels[p_n.panel_id].dock_id = rem_id;
-
-    //             //     // let gp_n = &mut self.nodes[p_n.parent];
-    //             //     // match gp_n.kind {
-    //             //     //     DockNodeKind::Split { children, axis, ratio } => {
-    //             //     //     },
-    //             //     //     DockNodeKind::Leaf => panic!(),
-    //             //     // }
-    //             // }
-    //         },
-    //         DockNodeKind::Leaf => panic!(),
-    //     }
-    // }
-
-    // /// instead of split_node which creates two new nodes we dock one existing node into another
-    // /// node
-    // pub fn merge_nodes(&mut self, target_id: Id, docking_id: Id, mut ratio: f32, dir: Dir) -> Id {
-    //     assert!(ratio < 1.0 && ratio > 0.0);
-    //     let target = &self.nodes[target_id];
-    //     assert!(target.kind == DockNodeKind::Leaf);
-    //     let mut n1_id = Id::from_hash(&(target.id.0 + 0));
-    //     let mut n2_id = target_id;
-
-    //     match dir {
-    //         Dir::E | Dir::S => ratio = 1.0 - ratio,
-    //         _ => (),
-    //     }
-
-    //     let parent_rect = target.rect;
-
-    //     let n1 = DockNode {
-    //         id: n1_id,
-    //         kind: DockNodeKind::Leaf,
-    //         rect: Rect::NAN,
-    //         parent: target_id,
-    //     };
-
-    //     let axis = match dir {
-    //         Dir::N | Dir::S => Axis::Y,
-    //         Dir::E | Dir::W => Axis::X,
-    //         _ => unreachable!(),
-    //     };
-
-    //     self.nodes[target_id].kind = DockNodeKind::Split {
-    //         children: [n1_id, n2_id],
-    //         axis,
-    //         ratio,
-    //     };
-
-    //     self.nodes.insert(n1_id, n1);
-    //     self.recompute_rects(target_id, parent_rect);
-
-    //     n1_id
-    // }
-
-    pub fn resize(&mut self, node_id: Id, dir: Dir, new_size: Rect) {}
-
     pub fn split_node2(&mut self, node_id: Id, mut ratio: f32, dir: Dir) -> (Id, Id) {
         assert!(ratio < 1.0 && ratio > 0.0);
         let node = &self.nodes[node_id];
@@ -4082,11 +4032,12 @@ impl DockTree {
             _ => unreachable!(),
         };
 
+        let n_rect = self.nodes[node_id].rect;
         self.nodes[node_id].panel_id = Id::NULL;
         self.nodes[node_id].kind = DockNodeKind::Split {
             children: [n1_id, n2_id],
             axis,
-            ratio,
+            pos: ratio * n_rect.size()[axis as usize],
         };
 
         self.nodes.insert(n1_id, n1);
@@ -4354,7 +4305,7 @@ pub enum PanelAction {
     DragSplit {
         dir: Dir,
         dock_split_id: Id,
-        prev_ratio: f32,
+        prev_pos: f32,
     },
     Resize {
         dir: Dir,
@@ -4386,9 +4337,9 @@ impl fmt::Display for PanelAction {
             Self::DragSplit {
                 dir,
                 dock_split_id: split_dock_id,
-                prev_ratio,
+                prev_pos,
             } => {
-                write!(f, "DRAG_SPLIT[{dir:?}] {{ {split_dock_id}, {prev_ratio} }}")
+                write!(f, "DRAG_SPLIT[{dir:?}] {{ {split_dock_id}, {prev_pos} }}")
             }
             Self::Resize { dir, id, prev_rect } => {
                 write!(f, "RESIZE[{dir:?}] {{ {id}, {prev_rect} }}")
