@@ -45,8 +45,7 @@ jobs:
 
       - name: Build the Rust WASM app and assets
         run: |
-          cd wgpui
-          ../trunk build --release --features webgl 
+          trunk build --release --features webgl 
 
       - name: Configure Pages
         uses: actions/configure-pages@v4
@@ -54,7 +53,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: wgpui/dist
+          path: dist
 
   deploy:
     needs: build
