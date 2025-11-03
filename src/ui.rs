@@ -490,21 +490,28 @@ impl Context {
     }
 
     pub fn begin_ex(&mut self, name: impl Into<String>, flags: PanelFlags) {
+
         fn next_window_pos(screen: Vec2, panel_size: Vec2) -> Vec2 {
-            static mut PANEL_COUNT: u32 = 1;
-            let offset = 60.0;
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static PANEL_COUNT: AtomicU32 = AtomicU32::new(0);
+
+            const OFFSET: f32 = 60.0;
+            const DEFAULT_SIZE: Vec2 = Vec2::new(500.0, 300.0);
+
             let size = if panel_size.is_finite() {
                 panel_size
             } else {
-                Vec2::new(500.0, 300.0)
+                DEFAULT_SIZE
             };
 
-            let (x, y);
-            unsafe {
-                x = (offset * PANEL_COUNT as f32) % (screen.x - size.x).max(0.0);
-                y = (offset * PANEL_COUNT as f32) % (screen.y - size.y).max(0.0);
-                PANEL_COUNT += 1;
-            }
+            let count = PANEL_COUNT.fetch_add(1, Ordering::Relaxed);
+            let cascade_offset = OFFSET * count as f32;
+
+            let available_width = (screen.x - size.x).max(0.0);
+            let available_height = (screen.y - size.y).max(0.0);
+
+            let x = cascade_offset % available_width.max(1.0);
+            let y = cascade_offset % available_height.max(1.0);
 
             Vec2::new(x, y)
         }
@@ -891,15 +898,16 @@ impl Context {
             self.panels[id].title_handle_rect =
                 Rect::from_min_size(p_pos, Vec2::new(min_width, titlebar_height));
 
+            if close.released() {
+                self.panels[id].close_pressed = true;
+            }
+
             if id == self.window_panel_id {
                 if min.released() {
                     self.window.minimize();
                 }
                 if max.released() || tb.double_clicked() {
                     self.window.toggle_maximize();
-                }
-                if close.released() {
-                    self.close_pressed = true;
                 }
 
                 let pad = 5.0;
@@ -1060,91 +1068,63 @@ impl Context {
 
         let title_text = self.layout_text(&title, self.style.text_size());
         let pad = (titlebar_height - title_text.height) / 2.0;
-        // draw titlebar background
+
+        // Draw titlebar background
         let mut tb_corners = panel_corners;
         tb_corners.bl = 0.0;
         tb_corners.br = 0.0;
 
-        let min_width = title_text.size().x + pad * 2.0;
         self.draw(
             Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height))
-                .draw_rect()
-                .fill(self.style.titlebar_color())
-                .corners(tb_corners),
+            .draw_rect()
+            .fill(self.style.titlebar_color())
+            .corners(tb_corners),
         );
 
+        // Calculate button dimensions
+        let btn_size = Vec2::new(25.0, 25.0);
+        let btn_spacing = 5.0;
+        let num_buttons = [close, maximize, minimize].iter().filter(|&&b| b).count() as f32;
+        let buttons_width = if num_buttons > 0.0 {
+            num_buttons * btn_size.x + (num_buttons - 1.0) * btn_spacing
+        } else {
+            0.0
+        };
+
+        let handle_width = title_text.size().x + pad * 2.0 + buttons_width + if buttons_width > 0.0 { pad } else { 0.0 };
+
+        // Draw title handle
         if draw_title_handle {
             self.draw(
-                Rect::from_min_size(panel_pos, title_text.size() + Vec2::splat(pad * 2.0))
-                    .draw_rect()
-                    .corners(CornerRadii::top(self.style.panel_corner_radius()))
-                    .fill(self.style.panel_bg()),
+                Rect::from_min_size(panel_pos, Vec2::new(handle_width, titlebar_height))
+                .draw_rect()
+                .corners(CornerRadii::top(self.style.panel_corner_radius()))
+                .fill(self.style.panel_bg()),
             );
         }
 
+        // Draw title text
         self.draw(title_text.draw_rects(panel_pos + pad, self.style.text_col()));
 
+        // Register titlebar interaction area
         let tb_sig = self.register_rect(
             move_id,
             Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height)),
         );
 
-        let btn_size = Vec2::new(25.0, 25.0);
-        let btn_spacing = 10.0;
-        let mut btn_x = panel_size.x - (btn_size.x + btn_spacing);
+        // Calculate button starting position
         let btn_y = (titlebar_height - btn_size.y) / 2.0;
+        let mut btn_x = if draw_title_handle {
+            title_text.size().x + pad * 2.0
+        } else {
+            panel_size.x - buttons_width - btn_spacing
+        };
 
         let mut min_sig = Signal::NONE;
         let mut max_sig = Signal::NONE;
         let mut close_sig = Signal::NONE;
 
-        // draw close button
-        if close {
-            let close_id = self.gen_id("##_CLOSE_ICON");
-            let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
-            close_sig = self.register_rect(close_id, Rect::from_min_size(btn_pos, btn_size));
-
-            let color = if close_sig.hovering() {
-                self.style.red()
-            } else {
-                RGBA::WHITE
-            };
-
-            let x_icon = self.layout_icon(phosphor_font::X, self.style.text_size());
-            let pad = btn_size - x_icon.size();
-            let pos = btn_pos + pad / 2.0;
-            self.draw(x_icon.draw_rects(pos, color));
-            btn_x -= btn_size.x + btn_spacing;
-        }
-
-        // draw maximize button
-        if maximize {
-            let max_id = self.gen_id("##_MAX_ICON");
-            let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
-            max_sig = self.register_rect(max_id, Rect::from_min_size(btn_pos, btn_size));
-
-            let color = if max_sig.hovering() {
-                self.style.btn_hover()
-            } else {
-                self.style.text_col()
-            };
-
-            {
-                let max_icon = if self.window.is_maximized() {
-                    self.layout_icon(phosphor_font::MAXIMIZE_OFF, self.style.text_size())
-                } else {
-                    self.layout_icon(phosphor_font::MAXIMIZE, self.style.text_size())
-                };
-                let pad = btn_size - max_icon.size();
-                let pos = btn_pos + pad / 2.0;
-                self.draw(max_icon.draw_rects(pos, color));
-                // list.add_text(pos, &max_icon, color);
-            }
-
-            btn_x -= btn_size.x + btn_spacing;
-        }
-
-        // draw minimize button
+        // Draw minimize button
         if minimize {
             let min_id = self.gen_id("##_MIN_ICON");
             let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
@@ -1157,13 +1137,176 @@ impl Context {
             };
 
             let min_icon = self.layout_icon(phosphor_font::MINIMIZE, self.style.text_size());
-            let pad = btn_size - min_icon.size();
-            let pos = btn_pos + pad / 2.0;
-            self.draw(min_icon.draw_rects(pos, color));
+            let icon_pad = (btn_size - min_icon.size()) / 2.0;
+            self.draw(min_icon.draw_rects(btn_pos + icon_pad, color));
+
+            btn_x += btn_size.x + btn_spacing;
         }
 
-        (tb_sig, min_sig, max_sig, close_sig, min_width)
+        // Draw maximize button
+        if maximize {
+            let max_id = self.gen_id("##_MAX_ICON");
+            let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
+            max_sig = self.register_rect(max_id, Rect::from_min_size(btn_pos, btn_size));
+
+            let color = if max_sig.hovering() {
+                self.style.btn_hover()
+            } else {
+                self.style.text_col()
+            };
+
+            let max_icon = if self.window.is_maximized() {
+                self.layout_icon(phosphor_font::MAXIMIZE_OFF, self.style.text_size())
+            } else {
+                self.layout_icon(phosphor_font::MAXIMIZE, self.style.text_size())
+            };
+            let icon_pad = (btn_size - max_icon.size()) / 2.0;
+            self.draw(max_icon.draw_rects(btn_pos + icon_pad, color));
+
+            btn_x += btn_size.x + btn_spacing;
+        }
+
+        // Draw close button
+        if close {
+            let close_id = self.gen_id("##_CLOSE_ICON");
+            let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
+            close_sig = self.register_rect(close_id, Rect::from_min_size(btn_pos, btn_size));
+
+            let color = if close_sig.hovering() {
+                self.style.red()
+            } else {
+                RGBA::WHITE
+            };
+
+            let x_icon = self.layout_icon(phosphor_font::X, self.style.text_size());
+            let icon_pad = (btn_size - x_icon.size()) / 2.0;
+            self.draw(x_icon.draw_rects(btn_pos + icon_pad, color));
+        }
+
+        (tb_sig, min_sig, max_sig, close_sig, handle_width)
     }
+
+    // pub fn draw_panel_decorations(
+    //     &mut self,
+    //     draw_title_handle: bool,
+    //     minimize: bool,
+    //     maximize: bool,
+    //     close: bool,
+    //     panel_corners: CornerRadii,
+    // ) -> (Signal, Signal, Signal, Signal, f32) {
+    //     let p = self.get_current_panel();
+    //     let titlebar_height = p.titlebar_height;
+    //     let panel_pos = p.pos;
+    //     let panel_size = p.size;
+    //     let title = p.name.clone();
+    //     let move_id = p.move_id;
+
+    //     let title_text = self.layout_text(&title, self.style.text_size());
+    //     let pad = (titlebar_height - title_text.height) / 2.0;
+    //     // draw titlebar background
+    //     let mut tb_corners = panel_corners;
+    //     tb_corners.bl = 0.0;
+    //     tb_corners.br = 0.0;
+
+    //     let min_width = title_text.size().x + pad * 2.0;
+    //     self.draw(
+    //         Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height))
+    //             .draw_rect()
+    //             .fill(self.style.titlebar_color())
+    //             .corners(tb_corners),
+    //     );
+
+    //     if draw_title_handle {
+    //         self.draw(
+    //             Rect::from_min_size(panel_pos, title_text.size() + Vec2::splat(pad * 2.0))
+    //                 .draw_rect()
+    //                 .corners(CornerRadii::top(self.style.panel_corner_radius()))
+    //                 .fill(self.style.panel_bg()),
+    //         );
+    //     }
+
+    //     self.draw(title_text.draw_rects(panel_pos + pad, self.style.text_col()));
+
+    //     let tb_sig = self.register_rect(
+    //         move_id,
+    //         Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height)),
+    //     );
+
+    //     let btn_size = Vec2::new(25.0, 25.0);
+    //     let btn_spacing = 10.0;
+    //     let mut btn_x = panel_size.x - (btn_size.x + btn_spacing);
+    //     let btn_y = (titlebar_height - btn_size.y) / 2.0;
+
+    //     let mut min_sig = Signal::NONE;
+    //     let mut max_sig = Signal::NONE;
+    //     let mut close_sig = Signal::NONE;
+
+    //     // draw close button
+    //     if close {
+    //         let close_id = self.gen_id("##_CLOSE_ICON");
+    //         let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
+    //         close_sig = self.register_rect(close_id, Rect::from_min_size(btn_pos, btn_size));
+
+    //         let color = if close_sig.hovering() {
+    //             self.style.red()
+    //         } else {
+    //             RGBA::WHITE
+    //         };
+
+    //         let x_icon = self.layout_icon(phosphor_font::X, self.style.text_size());
+    //         let pad = btn_size - x_icon.size();
+    //         let pos = btn_pos + pad / 2.0;
+    //         self.draw(x_icon.draw_rects(pos, color));
+    //         btn_x -= btn_size.x + btn_spacing;
+    //     }
+
+    //     // draw maximize button
+    //     if maximize {
+    //         let max_id = self.gen_id("##_MAX_ICON");
+    //         let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
+    //         max_sig = self.register_rect(max_id, Rect::from_min_size(btn_pos, btn_size));
+
+    //         let color = if max_sig.hovering() {
+    //             self.style.btn_hover()
+    //         } else {
+    //             self.style.text_col()
+    //         };
+
+    //         {
+    //             let max_icon = if self.window.is_maximized() {
+    //                 self.layout_icon(phosphor_font::MAXIMIZE_OFF, self.style.text_size())
+    //             } else {
+    //                 self.layout_icon(phosphor_font::MAXIMIZE, self.style.text_size())
+    //             };
+    //             let pad = btn_size - max_icon.size();
+    //             let pos = btn_pos + pad / 2.0;
+    //             self.draw(max_icon.draw_rects(pos, color));
+    //             // list.add_text(pos, &max_icon, color);
+    //         }
+
+    //         btn_x -= btn_size.x + btn_spacing;
+    //     }
+
+    //     // draw minimize button
+    //     if minimize {
+    //         let min_id = self.gen_id("##_MIN_ICON");
+    //         let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
+    //         min_sig = self.register_rect(min_id, Rect::from_min_size(btn_pos, btn_size));
+
+    //         let color = if min_sig.hovering() {
+    //             self.style.btn_hover()
+    //         } else {
+    //             self.style.text_col()
+    //         };
+
+    //         let min_icon = self.layout_icon(phosphor_font::MINIMIZE, self.style.text_size());
+    //         let pad = btn_size - min_icon.size();
+    //         let pos = btn_pos + pad / 2.0;
+    //         self.draw(min_icon.draw_rects(pos, color));
+    //     }
+
+    //     (tb_sig, min_sig, max_sig, close_sig, min_width)
+    // }
 
     pub fn update_panel_scroll(&mut self) {
         let PanelAction::Scroll {
@@ -2550,6 +2693,7 @@ impl Context {
             .collect();
         ui_text!(self: "draw_order: {draw_order:?}");
 
+
         let now = Instant::now();
         let dt = (now - self.prev_frame_time).as_secs_f32();
         let fps = 1.0 / dt;
@@ -2786,17 +2930,35 @@ impl Context {
     }
 
     pub fn prune_nodes(&mut self) {
-        self.panels.retain(|id, panel| {
-            let unused = self.frame_count - panel.last_frame_used > 1;
-            if unused {
-                debug_assert_eq!(*id, panel.id);
-                debug_assert_ne!(*id, self.hot_id);
-                debug_assert_ne!(*id, self.active_id);
-                debug_assert_ne!(*id, self.hot_panel_id);
-                debug_assert_ne!(*id, self.active_panel_id);
+        let remove_panel = |p: &Panel| -> bool {
+            self.frame_count - p.last_frame_used > 1
+        };
+
+        let ids: Vec<_> = self.panels.iter().map(|(id, panel)| *id).collect();
+
+        ids.into_iter().for_each(|i| {
+            let reset = |id: &mut Id| {
+                if *id == i {
+                    *id = Id::NULL;
+                }
+            };
+
+            if remove_panel(&self.panels[i]) {
+                if !self.panels[i].dock_id.is_null() {
+                    self.dock_tree.undock_node(self.panels[i].dock_id, &mut self.panels)
+                }
+                reset(&mut self.hot_id);
+                reset(&mut self.active_id);
+                reset(&mut self.hot_panel_id);
+                reset(&mut self.active_panel_id);
             }
-            !unused
         });
+
+        self.panels.retain(|id, panel| {
+            !remove_panel(panel)
+        });
+
+        self.draw_order.retain(|id| self.panels.contains_id(*id));
     }
 
     pub fn layout_text_with_font(

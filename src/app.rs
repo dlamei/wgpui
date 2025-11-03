@@ -224,6 +224,7 @@ impl ApplicationHandler for AppSetup {
 
 pub struct App {
     pub ui: ui::Context,
+    pub panels: Vec<u32>,
 
     pub mouse_pos: Vec2,
 
@@ -243,6 +244,7 @@ impl App {
         // windows.insert(main_window, window.clone());
         Self {
             ui: ui::Context::new(wgpu.clone(), window),
+            panels: vec![],
             prev_frame_time: Instant::now(),
             delta_time: Duration::ZERO,
             mouse_pos: Vec2::NAN,
@@ -345,21 +347,31 @@ impl App {
         let ui = &mut self.ui;
         ui.begin_frame();
 
-        // if let Some(p) = ui.get_panel_with_name("Debug") {
-        //     ui.next.min_size = p.full_size;
-        // }
         ui.begin_ex("Debug", ui::PanelFlags::NO_TITLEBAR);
         ui.set_current_panel_min_size(|prev, full, content| full);
 
-        if ui.button("test button") {
-            println!("test button pressed");
+        if ui.button("create panel") {
+            static mut PANELS_COUNT: u32 = 0;
+            unsafe { 
+                PANELS_COUNT += 1;
+                self.panels.push(PANELS_COUNT);
+            };
         }
-        ui.button("the quick brown fox jumps over the lazy dog");
-        ui.text("Hello World");
+        if ui.button(&format!("clear panels: {}", self.panels.len())) {
+            self.panels.clear();
+        }
+        // if ui.button("test button") {
+        //     println!("test button pressed");
+        // }
+        // ui.button("the quick brown fox jumps over the lazy dog");
+        // ui.text("Hello World");
         ui.end();
 
-        for i in 0..4 {
+        let mut ui_window = |i: u32| -> bool {
             ui.begin(format!("test window {i}"));
+
+            let closed = ui.get_current_panel().close_pressed;
+
             ui.button("test button");
             ui.same_line();
             ui.checkbox_intern("checkbox");
@@ -372,13 +384,36 @@ impl App {
 
             ui.slider_f32_intern("test slider", 0.0, 10.0);
             ui.end();
-        }
 
-        ui.push_style(ui::StyleVar::PanelBg(ui.style.panel_dark_bg()));
-        ui.begin("Viewport");
-        ui.pop_style();
-        ui.end();
+            !closed
+        };
 
+        self.panels.retain(|i| {
+            ui_window(*i)
+        });
+
+        // for i in 0..4 {
+        //     ui.begin(format!("test window {i}"));
+        //     ui.button("test button");
+        //     ui.same_line();
+        //     ui.checkbox_intern("checkbox");
+        //     ui.same_line();
+        //     ui.button("test button");
+
+        //     ui.switch_intern("test");
+        //     ui.same_line();
+        //     ui.button("the quick brown fox jumps over the lazy dog");
+
+        //     ui.slider_f32_intern("test slider", 0.0, 10.0);
+        //     ui.end();
+        // }
+
+        // ui.push_style(ui::StyleVar::PanelBg(ui.style.panel_dark_bg()));
+        // ui.begin("Viewport");
+        // ui.pop_style();
+        // ui.end();
+
+        ui.next.max_size.x = 500.0;
         ui.debug_window();
 
         ui.end_frame(event_loop);
