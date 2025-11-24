@@ -274,14 +274,23 @@ impl App {
                 }
                 // self.windows.get_mut(&id).unwrap().on_mouse_moved(self.mouse_pos);
             }
-            WE::Touch(winit::event::Touch { phase, location, .. }) => {
-                let pos: winit::dpi::LogicalPosition<f32> = location.to_logical(self.ui.window.raw.scale_factor());
+            WE::Touch(winit::event::Touch {
+                phase, location, ..
+            }) => {
+                let pos: winit::dpi::LogicalPosition<f32> =
+                    location.to_logical(self.ui.window.raw.scale_factor());
                 self.ui.set_mouse_pos(pos.x, pos.y);
                 match phase {
-                    winit::event::TouchPhase::Started => self.ui.set_mouse_press(MouseBtn::Left, true),
+                    winit::event::TouchPhase::Started => {
+                        self.ui.set_mouse_press(MouseBtn::Left, true)
+                    }
                     winit::event::TouchPhase::Moved => (),
-                    winit::event::TouchPhase::Ended => self.ui.set_mouse_press(MouseBtn::Left, false),
-                    winit::event::TouchPhase::Cancelled => self.ui.set_mouse_press(MouseBtn::Left, false),
+                    winit::event::TouchPhase::Ended => {
+                        self.ui.set_mouse_press(MouseBtn::Left, false)
+                    }
+                    winit::event::TouchPhase::Cancelled => {
+                        self.ui.set_mouse_press(MouseBtn::Left, false)
+                    }
                 }
             }
             WE::CursorEntered { .. } => {
@@ -357,12 +366,12 @@ impl App {
         let ui = &mut self.ui;
         ui.begin_frame();
 
-        ui.begin_ex("Debug", ui::PanelFlags::NO_TITLEBAR);
+        ui.begin_ex("Debug", ui::PanelFlag::NO_TITLEBAR);
         ui.set_current_panel_min_size(|prev, full, content| full);
 
         if ui.button("create panel") {
             static mut PANELS_COUNT: u32 = 0;
-            unsafe { 
+            unsafe {
                 PANELS_COUNT += 1;
                 self.panels.push(PANELS_COUNT);
             };
@@ -398,9 +407,7 @@ impl App {
             !closed
         };
 
-        self.panels.retain(|i| {
-            ui_window(*i)
-        });
+        self.panels.retain(|i| ui_window(*i));
 
         // for i in 0..4 {
         //     ui.begin(format!("test window {i}"));
@@ -418,10 +425,10 @@ impl App {
         //     ui.end();
         // }
 
-        // ui.push_style(ui::StyleVar::PanelBg(ui.style.panel_dark_bg()));
-        // ui.begin("Viewport");
-        // ui.pop_style();
-        // ui.end();
+        ui.push_style(ui::StyleVar::PanelBg(ui.style.panel_dark_bg()));
+        ui.begin("Viewport");
+        ui.pop_style();
+        ui.end();
 
         ui.debug_window();
 

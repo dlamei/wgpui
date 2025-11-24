@@ -1,19 +1,19 @@
-
 use cosmic_text as ctext;
 use glam::{Mat4, UVec2, Vec2};
 use std::{
     cell::{Ref, RefCell},
+    fmt, // added fmt
     hash,
 };
 use wgpu::util::DeviceExt;
 
 use crate::{
-    core::{
-        Axis, Dir
-    }, rect::Rect, ui::{DrawList, Id, IdMap}
+    core::{Axis, Dir},
+    rect::Rect,
+    ui::{DrawList, Id, IdMap, RootId},
 };
 
-macros::flags!(PanelFlags:
+macros::flags!(PanelFlag:
     NO_TITLEBAR,
     NO_FOCUS,
     NO_MOVE,
@@ -24,6 +24,7 @@ macros::flags!(PanelFlags:
     DRAW_H_SCROLLBAR,
     DRAW_V_SCROLLBAR,
     NO_DOCKING,
+    DOCK_OVER,
     DONT_KEEP_SCROLLBAR_PAD,
     DONT_CLIP_CONTENT,
 
@@ -32,14 +33,13 @@ macros::flags!(PanelFlags:
     IS_CHILD,
 );
 
-
 #[derive(Clone, Debug)]
 pub struct Panel {
     pub name: String,
     pub id: Id,
     /// set active_id to this id to start dragging the panel
     pub move_id: Id,
-    pub flags: PanelFlags,
+    pub flags: PanelFlag,
 
     pub root: Id,
     // pub nav_root: Id,
@@ -153,7 +153,7 @@ impl Panel {
             dock_id: Id::NULL,
             root: Id::NULL,
             // nav_root: Id::NULL,
-            flags: PanelFlags::NONE,
+            flags: PanelFlag::NONE,
             padding: 0.0,
             scrollbar_width: 0.0,
             scrollbar_padding: 0.0,
@@ -263,10 +263,10 @@ impl Panel {
         };
 
         (
-            x || !self.flags.has(PanelFlags::DONT_KEEP_SCROLLBAR_PAD)
-                && self.flags.has(PanelFlags::DRAW_H_SCROLLBAR),
-            y || !self.flags.has(PanelFlags::DONT_KEEP_SCROLLBAR_PAD)
-                && self.flags.has(PanelFlags::DRAW_V_SCROLLBAR),
+            x || !self.flags.has(PanelFlag::DONT_KEEP_SCROLLBAR_PAD)
+                && self.flags.has(PanelFlag::DRAW_H_SCROLLBAR),
+            y || !self.flags.has(PanelFlag::DONT_KEEP_SCROLLBAR_PAD)
+                && self.flags.has(PanelFlag::DRAW_V_SCROLLBAR),
         )
     }
 
@@ -434,7 +434,7 @@ impl Panel {
     }
 
     pub fn titlebar_rect(&self) -> Rect {
-        if self.flags.has(PanelFlags::NO_TITLEBAR) {
+        if self.flags.has(PanelFlag::NO_TITLEBAR) {
             return Rect::ZERO;
         } else {
             Rect::from_min_size(self.pos, Vec2::new(self.size.x, self.titlebar_height))
@@ -477,7 +477,6 @@ impl Panel {
     }
 }
 
-
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Cursor {
     pub pos: Vec2,
@@ -491,6 +490,10 @@ pub struct Cursor {
     pub indent: f32,
 }
 
+macros::flags!(DockNodeFlag:
+    NO_BRING_TO_FRONT,
+    ALLOW_SINGLE_LEAF,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DockNodeKind {
@@ -515,16 +518,63 @@ impl DockNodeKind {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct DockNode {
+    pub label: Option<&'static str>,
     pub id: Id,
     pub parent_id: Id,
     pub kind: DockNodeKind,
     pub rect: Rect,
     pub panel_id: Id,
+    pub flags: DockNodeFlag,
+}
+
+impl fmt::Display for DockNodeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DockNodeKind::Leaf => write!(f, "Leaf"),
+            DockNodeKind::Split {
+                children,
+                axis,
+                ratio,
+            } => {
+                let axis_str = match axis {
+                    Axis::X => "X",
+                    Axis::Y => "Y",
+                };
+                write!(f, "Split[{axis_str}, {}, {}]", children[0], children[1],)
+            }
+        }
+    }
+}
+
+impl fmt::Display for DockNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "DockNode {{ {}id: {}, kind: {}, panel: {}, {}, parent: {} }}",
+            self.label.map(|l| l.to_string() + ", ").unwrap_or_default(),
+            self.id,
+            self.kind,
+            self.panel_id,
+            self.flags,
+            self.parent_id,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct DockTree {
     pub nodes: IdMap<DockNode>,
+}
+
+impl fmt::Display for DockTree {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "DockTree {{")?;
+
+        for (_, n) in &self.nodes {
+            writeln!(f, "{}", n)?;
+        }
+        write!(f, "}}")
+    }
 }
 
 impl DockTree {
@@ -567,20 +617,26 @@ impl DockTree {
         }
     }
 
-    pub fn add_root(&mut self, rect: Rect, panel_id: Id) -> Id {
+    pub fn add_root_ex(&mut self, rect: Rect, panel_id: Id, flags: DockNodeFlag) -> Id {
         let id = Id::from_hash(&panel_id);
         let node = DockNode {
+            label: None,
             id,
             kind: DockNodeKind::Leaf,
             rect,
             parent_id: Id::NULL,
             panel_id,
+            flags,
             // panel: panel_id,
         };
 
         self.nodes.insert(id, node);
         // self.roots.push(id);
         id
+    }
+
+    pub fn add_root(&mut self, rect: Rect, panel_id: Id) -> Id {
+        self.add_root_ex(rect, panel_id, DockNodeFlag::NONE)
     }
 
     pub fn get_neighbor(&self, id: Id, dir: Dir) -> Id {
@@ -828,7 +884,27 @@ impl DockTree {
         Id::NULL
     }
 
-    pub fn get_tree(&mut self, mut node_id: Id) -> Vec<Id> {
+    pub fn get_leafs(&self, mut node_id: Id) -> Vec<Id> {
+        let root = self.get_root(node_id);
+        let mut out = Vec::new();
+        let mut stack = vec![root];
+
+        while let Some(cur) = stack.pop() {
+            match &self.nodes[cur].kind {
+                DockNodeKind::Split { children, .. } => {
+                    stack.push(children[1]);
+                    stack.push(children[0]);
+                }
+                DockNodeKind::Leaf => {
+                    out.push(cur);
+                }
+            }
+        }
+
+        out
+    }
+
+    pub fn get_tree(&self, mut node_id: Id) -> Vec<Id> {
         let root = self.get_root(node_id);
         let mut out = Vec::new();
         let mut stack = vec![root];
@@ -847,7 +923,7 @@ impl DockTree {
         out
     }
 
-    pub fn get_root(&mut self, mut node_id: Id) -> Id {
+    pub fn get_root(&self, mut node_id: Id) -> Id {
         let mut node = &self.nodes[node_id];
         while !node.parent_id.is_null() {
             node = &self.nodes[node.parent_id];
@@ -857,7 +933,7 @@ impl DockTree {
     }
 
     pub fn merge_nodes(&mut self, target_id: Id, docking_id: Id, mut ratio: f32, dir: Dir) -> Id {
-        assert!(ratio < 1.0 && ratio > 0.0);
+        assert!(ratio <= 1.0 && ratio > 0.0);
         assert!(self.nodes[target_id].kind.is_leaf());
 
         let original = self.nodes[target_id].clone();
@@ -906,7 +982,13 @@ impl DockTree {
         new_old_id
     }
 
-    pub fn undock_node(&mut self, node_id: Id, panels: &mut IdMap<Panel>) {
+    // returns id of the other node if only two are left and the dock tree is removed
+    pub fn undock_node(
+        &mut self,
+        node_id: Id,
+        panels: &mut IdMap<Panel>,
+        draworder: &mut Vec<RootId>,
+    ) {
         use DockNodeKind as DNK;
         let n = self.nodes[node_id];
         assert!(panels[n.panel_id].dock_id == node_id);
@@ -919,9 +1001,38 @@ impl DockTree {
         p.size = p.size_pre_dock;
         p.size_pre_dock = Vec2::NAN;
 
+        let dock_root = self.get_root(n.id);
+
+        let init_new_root_panel = |id: Id, draworder: &mut Vec<RootId>| {
+            let idx = draworder
+                .iter()
+                .position(|&i| i == RootId::Dock(dock_root))
+                .unwrap();
+            draworder.insert(idx + 1, RootId::Panel(id));
+        };
+
+        let remove_dock_root = |draworder: &mut Vec<RootId>| {
+            let idx = draworder
+                .iter()
+                .position(|&i| i == RootId::Dock(dock_root))
+                .unwrap();
+            draworder.remove(idx);
+        };
+
+        let replace_dock_root = |new_root: Id, draworder: &mut Vec<RootId>| {
+            let idx = draworder
+                .iter()
+                .position(|&i| i == RootId::Dock(dock_root))
+                .unwrap();
+            draworder[idx] = RootId::Dock(new_root);
+        };
+
+        init_new_root_panel(n.panel_id, draworder);
+
         // if it's a root leaf just remove it
         if n.parent_id.is_null() {
             self.nodes.remove(n.id);
+            remove_dock_root(draworder);
             return;
         }
 
@@ -941,30 +1052,86 @@ impl DockTree {
                 if grand_id.is_null() {
                     match self.nodes[rem_id].kind {
                         DNK::Leaf => {
-                            // two-leaf root: remove both children and the parent, undock sibling too
-                            let rem_panel_id = self.nodes[rem_id].panel_id;
-                            panels[rem_panel_id].dock_id = Id::NULL;
+                            // If the parent root had ALLOW_SINGLE_LEAF, promote the remaining leaf to be the new root.
+                            if self.nodes[parent_id].flags.has(DockNodeFlag::ALLOW_SINGLE_LEAF) {
+                                // promote rem_id to be the new root, inherit parent's flags and rect
+                                self.nodes[rem_id].parent_id = Id::NULL;
+                                // merge flags so the new root retains parent's special flags
+                                self.nodes[rem_id].flags = self.nodes[rem_id].flags | parent.flags;
+                                // remove the old split and the undocked node, then recompute rects from promoted root
+                                let parent_rect = parent.rect;
+                                self.nodes.remove(n.id);
+                                self.nodes.remove(parent_id);
+                                self.recompute_rects(rem_id, parent_rect);
+                                replace_dock_root(rem_id, draworder);
+                            } else {
+                                // two-leaf root: remove both children and the parent, undock sibling too
+                                let rem_panel_id = self.nodes[rem_id].panel_id;
+                                panels[rem_panel_id].dock_id = Id::NULL;
 
-                            // set sibling to size of the root
-                            let parent_rect = parent.rect;
-                            panels[rem_panel_id].size = parent_rect.size();
-                            panels[rem_panel_id].pos = parent_rect.min;
+                                // set sibling to size of the root
+                                let parent_rect = parent.rect;
+                                panels[rem_panel_id].size = parent_rect.size();
+                                panels[rem_panel_id].pos = parent_rect.min;
 
-                            self.nodes.remove(rem_id);
-                            self.nodes.remove(n.id);
-                            self.nodes.remove(parent_id);
+                                self.nodes.remove(rem_id);
+                                self.nodes.remove(n.id);
+                                self.nodes.remove(parent_id);
+
+                                init_new_root_panel(rem_panel_id, draworder);
+                                remove_dock_root(draworder);
+                            }
                         }
                         DNK::Split { .. } => {
-                            // promote rem_id to be the new root
+                            // promote rem_id (a subtree) to be the new root
                             self.nodes[rem_id].parent_id = Id::NULL;
+
                             self.nodes.remove(n.id);
                             self.nodes.remove(parent_id);
 
                             let parent_rect = parent.rect;
                             // self.nodes[rem_id].rect = parent_rect;
                             self.recompute_rects(rem_id, parent_rect);
+                            replace_dock_root(rem_id, draworder);
                         }
                     }
+                    // match self.nodes[rem_id].kind {
+
+                    //     DNK::Leaf => {
+                    //         if !self.nodes[rem_id]
+                    //             .flags
+                    //             .has(DockNodeFlag::ALLOW_SINGLE_LEAF)
+                    //         {
+                    //             // two-leaf root: remove both children and the parent, undock sibling too
+                    //             let rem_panel_id = self.nodes[rem_id].panel_id;
+                    //             panels[rem_panel_id].dock_id = Id::NULL;
+
+                    //             // set sibling to size of the root
+                    //             let parent_rect = parent.rect;
+                    //             panels[rem_panel_id].size = parent_rect.size();
+                    //             panels[rem_panel_id].pos = parent_rect.min;
+
+                    //             self.nodes.remove(rem_id);
+                    //             self.nodes.remove(n.id);
+                    //             self.nodes.remove(parent_id);
+
+                    //             init_new_root_panel(rem_panel_id, draworder);
+                    //             remove_dock_root(draworder);
+                    //         }
+                    //     }
+                    //     DNK::Split { .. } => {
+                    //         // promote rem_id to be the new root
+                    //         self.nodes[rem_id].parent_id = Id::NULL;
+
+                    //         self.nodes.remove(n.id);
+                    //         self.nodes.remove(parent_id);
+
+                    //         let parent_rect = parent.rect;
+                    //         // self.nodes[rem_id].rect = parent_rect;
+                    //         self.recompute_rects(rem_id, parent_rect);
+                    //         replace_dock_root(rem_id, draworder);
+                    //     }
+                    // }
                 } else {
                     // replace parent with rem_id in grandparent
                     {
@@ -995,11 +1162,10 @@ impl DockTree {
         }
     }
 
-
     pub fn resize(&mut self, node_id: Id, dir: Dir, new_size: Rect) {}
 
     pub fn split_node2(&mut self, node_id: Id, mut ratio: f32, dir: Dir) -> (Id, Id) {
-        assert!(ratio < 1.0 && ratio > 0.0);
+        assert!(ratio <= 1.0 && ratio > 0.0);
         let node = &self.nodes[node_id];
         assert!(node.kind == DockNodeKind::Leaf);
         let mut n1_id = Id::from_hash(&(node.id.0 + 0));
@@ -1013,19 +1179,23 @@ impl DockTree {
         let parent_rect = node.rect;
 
         let n1 = DockNode {
+            label: None,
             id: n1_id,
             kind: DockNodeKind::Leaf,
             rect: Rect::NAN,
             parent_id: node_id,
             panel_id: Id::NULL,
+            flags: DockNodeFlag::NONE,
         };
 
         let n2 = DockNode {
+            label: None,
             id: n2_id,
             kind: DockNodeKind::Leaf,
             rect: Rect::NAN,
             parent_id: node_id,
             panel_id: Id::NULL,
+            flags: DockNodeFlag::NONE,
         };
 
         let axis = match dir {

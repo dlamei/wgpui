@@ -26,13 +26,17 @@ pub use crate::ui_panel::*;
 // its happens when dragging the lower panel of a vertically splitted node. we try to dock an
 // already docked node
 
-
 // BEGIN TYPES
 //---------------------------------------------------------------------------------------
 
-
 id_type!(Id);
 id_type!(TextureId);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RootId {
+    Panel(Id),
+    Dock(Id),
+}
 
 impl Id {
     pub fn from_str(str: &str) -> Id {
@@ -1029,19 +1033,19 @@ sig_fn!(double_pressed => DOUBLE_PRESSED_LEFT);
 sig_fn!(dragging => DRAGGING_LEFT);
 sig_fn!(released => RELEASED_LEFT);
 
-impl fmt::Display for Signal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if *self == Self::NONE {
-            return write!(f, "NONE");
-        }
+// impl fmt::Display for Signal {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         if *self == Self::NONE {
+//             return write!(f, "NONE");
+//         }
 
-        let names = self
-            .iter_names()
-            .map(|(name, _)| name.to_string())
-            .collect::<Vec<_>>();
-        write!(f, "{}", names.join("|"))
-    }
-}
+//         let names = self
+//             .iter_names()
+//             .map(|(name, _)| name.to_string())
+//             .collect::<Vec<_>>();
+//         write!(f, "{}", names.join("|"))
+//     }
+// }
 
 //---------------------------------------------------------------------------------------
 // END FLAGS
@@ -2293,7 +2297,6 @@ pub fn tessellate_convex_fill(
 
     (verts, idxs)
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawRect {

@@ -464,6 +464,20 @@ pub fn flags(input: TokenStream) -> TokenStream {
             }
         }
 
+        impl std::fmt::Display for #ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                if *self == Self::NONE {
+                    return write!(f, "NONE");
+                }
+
+                let names = self
+                    .iter_names()
+                    .map(|(name, _)| name.to_string())
+                    .collect::<Vec<_>>();
+                write!(f, "{}", names.join("|"))
+            }
+        }
+
         impl #ty {
             pub fn has(self, other: #ty) -> bool {
                 self.contains(other)
