@@ -948,6 +948,17 @@ macro_rules! id_type {
 }
 pub(crate) use id_type;
 
+/// Compute a stable 64-bit hash using the global hasher keys.
+///
+/// Use this helper when you need a consistent u64 hash across the codebase
+/// so all callers use the same hasher seed and behaviour.
+pub fn global_hash64(h: &impl std::hash::Hash) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = ahash::AHasher::new_with_keys(0, 0);
+    h.hash(&mut hasher);
+    hasher.finish()
+}
+
 // a bit ugly... :(
 macro_rules! stacked_fields_struct {
     (@count: ) => {

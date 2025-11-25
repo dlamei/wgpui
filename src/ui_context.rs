@@ -77,7 +77,7 @@ fn dark_theme() -> StyleTable {
 
         match f {
             SF::TitlebarColor => SV::TitlebarColor(dark),
-            SF::TitlebarHeight => SV::TitlebarHeight(30.0),
+            SF::TitlebarHeight => SV::TitlebarHeight(26.0),
             SF::WindowTitlebarHeight => SV::WindowTitlebarHeight(40.0),
             SF::TextSize => SV::TextSize(18.0),
             SF::TextCol => SV::TextCol(RGBA::hex("#EEEBE1")),
@@ -87,7 +87,8 @@ fn dark_theme() -> StyleTable {
             SF::BtnHover => SV::BtnHover(btn_hover),
             SF::BtnPress => SV::BtnPress(accent),
             SF::BtnPressText => SV::BtnPressText(btn_default),
-            SF::WindowBg => SV::WindowBg(RGBA::hex("#5c6b6f")),
+            // SF::WindowBg => SV::WindowBg(RGBA::hex("#5c6b6f")),
+            SF::WindowBg => SV::WindowBg(dark),
             SF::PanelBg => SV::PanelBg(RGBA::hex("#343B40")),
             SF::PanelDarkBg => SV::PanelDarkBg(RGBA::hex("#282c34")),
             SF::PanelCornerRadius => SV::PanelCornerRadius(7.0),
@@ -106,6 +107,7 @@ fn dark_theme() -> StyleTable {
 pub struct Context {
     // pub panels: HashMap<Id, Panel>,
     pub panels: IdMap<Panel>,
+    // TODO: cleanup?
     pub widget_data: DataMap<Id>,
     pub docktree: DockTree,
     // pub style: Style,
@@ -116,8 +118,11 @@ pub struct Context {
     pub draworder: Vec<RootId>,
 
     pub current_tabbar_id: Id,
-    pub tabbars: IdMap<TabBar>,
+    // pub tabbars: IdMap<TabBar>,
     pub tabbar_count: u32,
+
+    pub tabbar_stack: Vec<Id>,
+
 
     pub text_input_states: IdMap<TextInputState>,
 
@@ -133,30 +138,37 @@ pub struct Context {
     ///
     /// can either be an item or a panel
     pub hot_id: Id,
+    /// the hot_id from the previous frame
+    ///
+    /// needed because hot_id is reset every frame
+    pub prev_hot_id: Id,
 
     /// the id of the element that is currently active
     ///
     /// Can either be an item or a panel.
     /// This allows e.g. dragging the panel by its titlebar (item) or the panel itself
     pub active_id: Id,
-    pub active_id_changed: bool,
-
-    pub prev_hot_id: Id,
     pub prev_active_id: Id,
+    pub active_id_changed: bool,
 
     /// the id of the hot panel
     ///
     /// the hot_id can only point to elements of the currently hot panel
     pub hot_panel_id: Id,
+    pub prev_hot_panel_id: Id,
+
 
     /// the id of the active panel
     ///
     /// the active_id can only point to elements of the currently active panel
     pub active_panel_id: Id,
+    pub prev_active_panel_id: Id,
+
+    pub hot_tabbar_id: Id,
+    pub prev_hot_tabbar_id: Id,
+
     pub window_panel_id: Id,
     // pub window_panel_titlebar_height: f32,
-    pub prev_hot_panel_id: Id,
-    pub prev_active_panel_id: Id,
 
     // some items can only be interacted with while dragging, e.g. sliders
     // just holding down the mouse will not register as a drag, only a press
@@ -223,8 +235,9 @@ impl Context {
             current_panel_stack: vec![],
 
             current_tabbar_id: Id::NULL,
-            tabbars: IdMap::new(),
+            // tabbars: IdMap::new(),
             tabbar_count: 0,
+            tabbar_stack: Vec::new(),
             text_input_states: IdMap::new(),
 
             current_panel_id: Id::NULL,
@@ -241,6 +254,10 @@ impl Context {
             prev_hot_panel_id: Id::NULL,
             prev_active_panel_id: Id::NULL,
             prev_hot_id: Id::NULL,
+
+            hot_tabbar_id: Id::NULL,
+            prev_hot_tabbar_id: Id::NULL,
+
             prev_active_id: Id::NULL,
             expect_drag: false,
             // resizing_window_dir: None,
@@ -397,6 +414,25 @@ impl Context {
     // TODO[NOTE]: we need acceleration (or maybe smoothing) when scrolling. or momentum
     pub fn set_mouse_scroll(&mut self, delta: Vec2) {
         let delta = delta * self.scroll_speed;
+        // If we recently hovered over a tabbar, attempt to scroll its tabs horizontally.
+        // Only consume the wheel event if the tabbar can actually move; otherwise fall through
+        // so parent panels can handle scrolling.
+        if !self.prev_hot_tabbar_id.is_null() {
+            if let Some(tb) = self.widget_data.get_mut::<ui::TabBar>(&self.prev_hot_tabbar_id) {
+                // Use vertical mouse wheel to scroll horizontally: subtract delta.y
+                let scroll_amount = delta.y;
+                let max_scroll = (tb.total_width - tb.bar_rect.width()).max(0.0);
+                if max_scroll > 0.0 {
+                    let new_offset = (tb.scroll_offset - scroll_amount).clamp(0.0, max_scroll);
+                    // If the offset actually changes, consume the event; otherwise, fall through.
+                    if (new_offset - tb.scroll_offset).abs() > f32::EPSILON {
+                        tb.scroll_offset = new_offset;
+                        return;
+                    }
+                }
+                // else: nothing to scroll, fall through
+            }
+        }
         let mut target = if !self.hot_panel_id.is_null() {
             &mut self.panels[self.hot_panel_id]
             // self.panels[self.hot_panel_id].move_scroll(delta * self.scroll_speed);
@@ -526,7 +562,7 @@ impl Context {
         if self.current_panel_id.is_null() {
             Id::from_str(label)
         } else {
-            self.get_current_panel().gen_id(label)
+            self.get_current_panel().gen_local_id(label)
         }
     }
 
@@ -698,7 +734,7 @@ impl Context {
             PanelFlag::NO_FOCUS
                 | PanelFlag::NO_MOVE
                 | PanelFlag::NO_RESIZE
-                | PanelFlag::DOCK_OVER
+                | PanelFlag::ONLY_DOCK_OVER
                 | PanelFlag::NO_TITLEBAR,
         );
 
@@ -1052,12 +1088,16 @@ impl Context {
             dock_target,
             cancelled_docking,
             drag_by_titlebar,
+            drag_by_title_handle,
             ..
         } = &mut self.panel_action
         {
             if p.clip_rect.contains(self.mouse.pos)
                 // && self.panels[*id].titlebar_rect().contains(self.mouse.pos)
+                // Only allow setting a dock target when dragging by titlebar if the moving panel
+                // is not already docked, or when the drag originates from the title handle.
                 && *drag_by_titlebar
+                && (self.panels[*id].dock_id.is_null() || *drag_by_title_handle)
                 && !self.modifiers.shift_key()
             {
                 let curr_draw_order = p.draw_order;
@@ -1784,6 +1824,10 @@ impl Context {
     }
 
     pub fn get_dock_target(mouse: Vec2, target_area: Rect, flags: PanelFlag) -> (Rect, Dir, f32) {
+        if flags.has(PanelFlag::ONLY_DOCK_OVER) {
+            return (target_area, Dir::N, 1.0);
+        }
+
         let mut dock_target = target_area;
         let mut delta = (mouse - target_area.center()) / target_area.size() * 2.0;
         delta.x = delta.x.clamp(-1.0, 1.0);
@@ -2896,6 +2940,8 @@ impl Context {
         if !self.mouse.pressed(MouseBtn::Left) {
             self.expect_drag = false;
         }
+        // reset hovered tabbar each frame
+        self.hot_tabbar_id = Id::NULL;
 
         // if !self.window.is_decorated() {
         self.next.pos = Vec2::ZERO;
@@ -3192,7 +3238,14 @@ impl Context {
             let mut tmp = self.draw_item_outline;
             self.checkbox("draw item outline", &mut tmp);
             self.draw_item_outline = tmp;
+
+            self.begin_tabbar("tabbar 2");
+            self.tabitem("tab1");
+            self.tabitem("tab2");
+            self.tabitem("tab3");
+            self.end_tabbar();
         }
+
 
         self.unindent(10.0);
         self.end_tabbar();
@@ -3255,6 +3308,7 @@ impl Context {
         self.prev_active_panel_id = self.active_panel_id;
         self.prev_hot_id = self.hot_id;
         self.prev_active_id = self.active_id;
+        self.prev_hot_tabbar_id = self.hot_tabbar_id;
 
         self.end_assert(Some("##_WINDOW_PANEL"));
 
@@ -3426,7 +3480,6 @@ impl Context {
     pub fn build_draw_list(draw_buff: &mut DrawCallList, draw_list: &DrawList, screen_size: Vec2) {
         // let draw_list = self.panels[id].draw_list.borrow();
         // println!("draw_list:\n{:#?}", draw_list);
-        // for cmd in &draw_list.cmd_buffer
 
         // println!("{:#?}", draw_list);
 

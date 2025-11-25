@@ -5,7 +5,7 @@ use crate::{
     ctext,
     mouse::{CursorIcon, MouseBtn},
     rect::Rect,
-    ui::{self, CornerRadii, Id, ItemFlags, TextInputFlags, TextInputState},
+    ui::{self, CornerRadii, Id, ItemFlags, TabBar, TextInputFlags, TextInputState},
 };
 
 macro_rules! ui_text {
@@ -464,7 +464,7 @@ impl ui::Context {
         let layout = self.layout_text(text, self.style.text_size());
 
         let p = self.get_current_panel();
-        let id = p.gen_id(text);
+        let id = p.gen_local_id(text);
 
         let size = Vec2::new(layout.width, layout.height.max(self.style.line_height()));
         let rect = self.place_item(id, size);
@@ -488,7 +488,7 @@ impl ui::Context {
         self.move_down(vertical_offset);
 
         let panel = self.get_current_panel();
-        let id = panel.gen_id(text);
+        let id = panel.gen_local_id(text);
 
         if !self.text_input_states.contains_id(id) {
             let item = ui::TextItem::new(text.to_string(), self.style.text_size(), 1.0, "Inter");
@@ -769,7 +769,10 @@ impl ui::Context {
     pub fn begin_tabbar(&mut self, label: &str) {
         // TODO[NOTE] tabbar stack
         let id = self.gen_id(label);
-        self.tabbars.map.entry(id).or_insert(ui::TabBar::new());
+        // self.tabbars.map.entry(id).or_insert(ui::TabBar::new());
+        let _ = self.widget_data.get_or_insert(id, ui::TabBar::new());
+
+        self.tabbar_stack.push(id);
         self.current_tabbar_id = id;
         self.push_id(id);
 
@@ -782,32 +785,42 @@ impl ui::Context {
 
         let cursor = self.get_current_panel()._cursor.clone().into_inner();
 
-        let tb = &mut self.tabbars[id];
+        let tb = self.widget_data.get_mut::<TabBar>(&id).unwrap();
         tb.id = id;
         tb.panel_id = self.current_panel_id;
         tb.cursor_backup = cursor;
         tb.bar_rect = rect;
 
         tb.layout_tabs();
+
+        // clamp scroll offset to valid range after laying out tabs
+        let max_scroll = (tb.total_width - rect.width()).max(0.0);
+        tb.scroll_offset = tb.scroll_offset.clamp(0.0, max_scroll);
+
+        if rect.contains(self.mouse.pos) {
+            self.hot_tabbar_id = id;
+        }
     }
 
     pub fn end_tabbar(&mut self) {
-        let tb = &self.tabbars[self.current_tabbar_id];
-        // let cursor = tb.cursor_backup;
-        let tb_id = tb.id;
-        assert!(self.pop_id() == tb_id);
+        let tb_id = self.tabbar_stack.pop().expect("end_tabbar without matching begin_tabbar");
+        let tb = self.widget_data.get::<TabBar>(&tb_id).unwrap();
+        let tb_id_confirm = tb.id;
+        assert!(self.pop_id() == tb_id_confirm);
 
-        self.current_tabbar_id = Id::NULL;
+        self.current_tabbar_id = self.tabbar_stack.last().copied().unwrap_or(Id::NULL);
         // self.get_current_panel()._cursor.replace(cursor);
     }
 
     pub fn tabitem(&mut self, label: &str) -> bool {
         let tb_id = self.current_tabbar_id;
-        let tb_rect = self.tabbars[tb_id].bar_rect;
+        // let tb_rect = self.tabbars[tb_id].bar_rect;
+        let tb_rect = self.widget_data.get::<TabBar>(&tb_id).unwrap().bar_rect;
         assert!(!tb_id.is_null());
 
         let id = self.gen_id(label);
-        let tb = &mut self.tabbars[tb_id];
+        // let tb = &mut self.tabbars[tb_id];
+        let tb = self.widget_data.get_mut::<TabBar>(&tb_id).unwrap();
         if tb.tabs.is_empty() {
             tb.selected_tab_id = id;
         }
@@ -817,7 +830,8 @@ impl ui::Context {
         let vert_pad = ((tb_rect.height() - text_dim.y) / 2.0).max(0.0);
         let item_width = vert_pad * 2.0 + text_dim.x;
 
-        let tb = &mut self.tabbars[tb_id];
+        let tb = self.widget_data.get_mut::<TabBar>(&tb_id).unwrap();
+        // let tb = &mut self.tabbars[tb_id];
         let is_selected = tb.selected_tab_id == id;
 
         let indx = tb.tabs.iter().position(|t| t.id == id);
@@ -833,7 +847,8 @@ impl ui::Context {
         let item = tb.tabs[indx];
 
         let tab_size = Vec2::new(item.width, tb_rect.height());
-        let rect = Rect::from_min_size(tb_rect.min + Vec2::new(item.offset, 0.0), tab_size);
+        // account for horizontal scrolling when placing tabs
+        let rect = Rect::from_min_size(tb_rect.min + Vec2::new(item.offset - tb.scroll_offset, 0.0), tab_size);
         let sig = self.register_rect(id, rect);
 
         let (btn_col, text_col) = if is_selected {
@@ -844,7 +859,8 @@ impl ui::Context {
             (self.style.panel_bg(), self.style.text_col())
         };
 
-        let tb = &mut self.tabbars[tb_id];
+        // let tb = &mut self.tabbars[tb_id];
+        let tb = self.widget_data.get_mut::<TabBar>(&tb_id).unwrap();
 
         if sig.pressed() {
             tb.selected_tab_id = id;
@@ -870,10 +886,12 @@ impl ui::Context {
             tb.move_tab(indx, new_indx);
         }
 
-        item_pos.x = item_pos
-            .x
-            .max(tb_rect.min.x)
-            .min(tb_rect.max.x - rect.width());
+        if tb.is_dragging && tb.selected_tab_id == id {
+            item_pos.x = item_pos
+                .x
+                .max(tb_rect.min.x)
+                .min(tb_rect.max.x - rect.width());
+        }
 
         let text_pos = item_pos
             + Vec2::new(

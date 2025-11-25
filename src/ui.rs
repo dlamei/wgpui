@@ -488,9 +488,12 @@ pub struct TabBar {
     pub bar_rect: Rect,
     pub cursor_backup: Cursor,
     pub tabs: Vec<TabItem>,
-
     pub is_dragging: bool,
     pub dragging_offset: f32,
+    // Horizontal scroll offset when tabs overflow the bar rect
+    pub scroll_offset: f32,
+    // Cached total width of all tabs (including gaps)
+    pub total_width: f32,
 }
 
 impl TabBar {
@@ -505,6 +508,8 @@ impl TabBar {
             tabs: vec![],
             is_dragging: false,
             dragging_offset: f32::NAN,
+            scroll_offset: 0.0,
+            total_width: 0.0,
         }
     }
 
@@ -515,6 +520,7 @@ impl TabBar {
             offset += tab.width;
             offset += 5.0;
         }
+        self.total_width = offset.max(0.0);
     }
 
     pub fn find_tab(&self, id: Id) -> Option<&TabItem> {
@@ -545,7 +551,8 @@ impl TabBar {
         let mut insert_idx = 0;
 
         for (i, tab) in self.tabs.iter().enumerate() {
-            let tab_start = self.bar_rect.min.x + tab.offset;
+            // account for horizontal scrolling when computing positions
+            let tab_start = self.bar_rect.min.x + tab.offset - self.scroll_offset;
             let tab_end = tab_start + tab.width;
             let tab_center = tab_start + tab.width * 0.5;
 

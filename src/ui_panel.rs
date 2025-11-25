@@ -25,6 +25,7 @@ macros::flags!(PanelFlag:
     DRAW_V_SCROLLBAR,
     NO_DOCKING,
     DOCK_OVER,
+    ONLY_DOCK_OVER,
     DONT_KEEP_SCROLLBAR_PAD,
     DONT_CLIP_CONTENT,
 
@@ -377,7 +378,7 @@ impl Panel {
         self.id_stack.borrow_mut().pop().unwrap()
     }
 
-    pub fn gen_id(&self, label: impl hash::Hash) -> Id {
+    pub fn gen_local_id(&self, label: impl hash::Hash) -> Id {
         use std::hash::{Hash, Hasher};
         // let ids = &self.id_stack.borrow();
         // let seed = ids.last().expect("at least self.id should be in the stack");
@@ -390,7 +391,10 @@ impl Panel {
             id.hash(&mut hasher);
         }
 
-        Id::from_hash(&label).hash(&mut hasher);
+        // Use a global stable hash for the label to ensure the same seeding
+        // behaviour across the codebase.
+        let label_hash = crate::core::global_hash64(&label);
+        label_hash.hash(&mut hasher);
         Id(hasher.finish().max(1))
     }
 
