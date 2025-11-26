@@ -1,12 +1,7 @@
 use glam::Vec2;
 
 use crate::{
-    core::RGBA,
-    ctext,
-    mouse::{CursorIcon, MouseBtn},
-    rect::Rect,
-    ui::{self, CornerRadii, Id, ItemFlags, TabBar, TextInputFlags, TextInputState, TextureId},
-    gpu,
+    core::RGBA, ctext, gpu, mouse::{CursorIcon, MouseBtn}, rect::Rect, ui::{self, CornerRadii, Id, ItemFlags, Signal, TabBar, TextInputFlags, TextInputState, TextureId}
 };
 
 macro_rules! ui_text {
@@ -26,8 +21,8 @@ impl ui::Context {
     pub fn image_id(&mut self, size: Vec2, uv_min: Vec2, uv_max: Vec2, tex_id: TextureId) {
         // let id = self.gen_id(tex_id);
         let id = Id::NULL;
-        let rect = self.place_item(id, size);
-        self.register_item(id);
+        let rect = self.place_item(size);
+        self.reg_item_(id, rect);
         self.draw(rect.draw_rect().uv(uv_min, uv_max).texture(tex_id));
         // self.draw(|list| {
         //     list.rect(rect.min, rect.max)
@@ -50,8 +45,8 @@ impl ui::Context {
         let horiz_pad = vert_pad;
         let size = Vec2::new(text_dim.x + horiz_pad * 2.0, total_h);
 
-        let rect = self.place_item(id, size);
-        let sig = self.register_item(id);
+        let rect = self.place_item(size);
+        let sig = self.reg_item_active_on_press(id, rect);
 
         let start_drag_outside = self
             .mouse
@@ -94,8 +89,8 @@ impl ui::Context {
         let text_dim = text_shape.size();
 
         let id = self.gen_id(label);
-        let rect = self.place_item(id, size);
-        let sig = self.register_item(id);
+        let rect = self.place_item(size);
+        let sig = self.reg_item_active_on_press(id, rect);
 
         if sig.released() {
             *b = !*b;
@@ -159,8 +154,8 @@ impl ui::Context {
         let box_size = self.style.line_height();
         let text_shape = self.layout_text(label, self.style.text_size());
 
-        let rect = self.place_item(id, Vec2::splat(box_size));
-        let sig = self.register_item(id);
+        let rect = self.place_item(Vec2::splat(box_size));
+        let sig = self.reg_item_active_on_press(id, rect);
 
         if sig.released() {
             *b = !*b;
@@ -199,7 +194,7 @@ impl ui::Context {
 
     pub fn separator_h(&mut self, thickness: f32, fill: RGBA) {
         let width = self.available_content().x;
-        let rect = self.place_item(Id::NULL, Vec2::new(width, thickness));
+        let rect = self.place_item(Vec2::new(width, thickness));
         let col = self.style.panel_dark_bg();
 
         // self.draw(|list| list.rect(rect.min, rect.max).fill(fill).add());
@@ -207,10 +202,11 @@ impl ui::Context {
     }
 
     pub fn slider_f32(&mut self, label: &str, min: f32, max: f32, val: &mut f32) {
+        let id = self.gen_id(label);
         let height = self.style.line_height();
         let width = self.available_content().x / 2.5;
-        let rect = self.place_item(self.gen_id(label), Vec2::new(width, height));
-        let sig = self.register_item(self.gen_id(label));
+        let rect = self.place_item(Vec2::new(width, height));
+        let sig = self.reg_item_active_on_press(id, rect);
 
         let handle_size = height * 0.8;
         let rail_pad = height - handle_size;
@@ -284,15 +280,26 @@ impl ui::Context {
         let height = self.style.line_height();
         let width = self.available_content().x / 2.5;
         let id = self.gen_id(label);
-        let rect = self.place_item(id, Vec2::new(width, height));
-        let sig = self.register_item(id);
+        let rect = self.place_item(Vec2::new(width, height));
+
+        // If there's an active text editor for this item we are in edit mode
+        let mut is_editing = self.text_input_states.contains_id(id);
+
+        let sig = self.reg_item_active_on_press(id, rect);
+
+        if (sig.clicked() || sig.keyboard_focused()) && !is_editing {
+            let s = format!("{}", *val);
+            let item = ui::TextItem::new(s, self.style.text_size(), 1.0, "Inter");
+            self.active_id = id;
+            self.text_input_states.insert(id, TextInputState::new(self.font_table.clone(), item, false));
+            self.text_input_states[id].select_all();
+            is_editing = true;
+        }
 
         let handle_size = height * 0.8;
         let rail_pad = height - handle_size;
         let usable_width = (rect.width() - handle_size - rail_pad).max(1.0);
 
-        // If there's an active text editor for this item we are in edit mode
-        let is_editing = self.text_input_states.contains_id(id);
 
         // Cursor hints when hovering/dragging
         if !is_editing && (sig.hovering() || sig.dragging()) {
@@ -324,9 +331,11 @@ impl ui::Context {
                 .fill(rail_col),
         );
 
+        self.current_drawlist().push_merged_clip_rect(rect);
+
         // Editing: show text editor centered in the rail
         if is_editing {
-            let sig2 = self.register_rect(id, rect);
+            // let sig2 = self.reg_item(id, rect);
 
             let input = &mut self.text_input_states[id];
             input.edit.shape_as_needed(&mut self.font_table.sys(), true);
@@ -338,11 +347,11 @@ impl ui::Context {
 
             // Forward mouse events relative to the editor origin
             let rel = self.mouse.pos - edit_pos;
-            if sig2.double_pressed() {
+            if sig.double_pressed() {
                 input.mouse_double_clicked(rel);
-            } else if sig2.dragging() {
+            } else if sig.dragging() {
                 input.mouse_dragging(rel);
-            } else if sig2.pressed() {
+            } else if sig.pressed() {
                 input.mouse_pressed(rel);
             }
 
@@ -391,16 +400,15 @@ impl ui::Context {
             self.draw(txt.draw_rects(txt_pos, self.style.text_col()));
 
             // Click to open editor (ignore if drag started outside)
-            let start_drag_outside = self.mouse.drag_start(MouseBtn::Left).map_or(false, |p| !rect.contains(p));
-            if sig.clicked() && !start_drag_outside {
-                let s = format!("{}", *val);
-                let item = ui::TextItem::new(s, self.style.text_size(), 1.0, "Inter");
-                self.text_input_states.insert(id, TextInputState::new(self.font_table.clone(), item, false));
-                self.text_input_states[id].select_all();
-                self.active_id = id;
-                self.active_id_changed = true;
-            }
+            // // let start_drag_outside = self.mouse.drag_start(MouseBtn::Left).map_or(false, |p| !rect.contains(p));
+            // if sig.clicked() {
+            //     self.active_id = id;
+            //     self.active_id_changed = true;
+            // }
+
         }
+
+        self.current_drawlist().pop_clip_rect();
 
         self.same_line();
         self.text(label);
@@ -429,8 +437,8 @@ impl ui::Context {
         let avail = self.available_content();
         let size = Vec2::new(avail.x, total_h);
 
-        let rect = self.place_item(id, size);
-        let sig = self.register_item(id);
+        let rect = self.place_item(size);
+        let sig = self.reg_item_active_on_press(id, rect);
 
         let start_drag_outside = self
             .mouse
@@ -470,11 +478,10 @@ impl ui::Context {
         self.move_down(pad);
         let layout = self.layout_text(text, self.style.text_size());
 
-        let p = self.get_current_panel();
-        let id = p.gen_local_id(text);
+        let id = self.gen_id(text);
 
         let size = Vec2::new(layout.width, layout.height.max(self.style.line_height()));
-        let rect = self.place_item(id, size);
+        let rect = self.place_item(size);
         // self.register_item(id);
         self.move_down(pad);
 
@@ -518,7 +525,7 @@ impl ui::Context {
         let horiz_pad = vert_pad;
         let size = Vec2::new(text_dim.x + horiz_pad * 2.0, total_h);
 
-        let rect = self.place_item(id, size);
+        let rect = self.place_item(size);
         // let sig = self.register_item_ex(id, ui::ItemFlags::ACTIVATE_ON_RELEASE);
 
         let itm_flag = if flags.has(TextInputFlags::SELECT_ON_ACTIVE) {
@@ -526,12 +533,12 @@ impl ui::Context {
             // on press the text is selected but most certainly the mouse is still pressed on the next
             // frame immediately deselecting it. currently the item needs to be selected when the mouse
             // is no longer pressed
-            ItemFlags::ACTIVATE_ON_RELEASE
+            ItemFlags::SET_ACTIVE_ON_RELEASE
         } else {
-            ItemFlags::NONE
+            ItemFlags::SET_ACTIVE_ON_PRESS
         };
 
-        let sig = self.register_item_ex(id, itm_flag);
+        let sig = self.reg_item_ex(id, rect, itm_flag);
 
         if sig.hovering() || sig.dragging() {
             self.set_cursor_icon(CursorIcon::Text);
@@ -786,7 +793,7 @@ impl ui::Context {
         let avail = self.available_content();
 
         self.push_style(ui::StyleVar::SpacingV(0.0));
-        let rect = self.place_item(id, Vec2::new(avail.x, self.style.line_height()));
+        let rect = self.place_item(Vec2::new(avail.x, self.style.line_height()));
         self.pop_style();
         self.separator_h(3.0, self.style.btn_hover());
 
@@ -856,7 +863,7 @@ impl ui::Context {
         let tab_size = Vec2::new(item.width, tb_rect.height());
         // account for horizontal scrolling when placing tabs
         let rect = Rect::from_min_size(tb_rect.min + Vec2::new(item.offset - tb.scroll_offset, 0.0), tab_size);
-        let sig = self.register_rect(id, rect);
+        let sig = self.reg_item_active_on_press(id, rect);
 
         let (btn_col, text_col) = if is_selected {
             (self.style.btn_hover(), self.style.text_col())

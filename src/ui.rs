@@ -976,7 +976,11 @@ impl TextInputState {
 // BEGIN FLAGS
 //---------------------------------------------------------------------------------------
 
-macros::flags!(ItemFlags: ACTIVATE_ON_RELEASE);
+macros::flags!(ItemFlags: 
+    SET_ACTIVE_ON_PRESS,
+    SET_ACTIVE_ON_CLICK,
+    SET_ACTIVE_ON_RELEASE,
+);
 
 macros::flags!(TextInputFlags:
     MULTILINE,
@@ -1022,6 +1026,8 @@ macros::flags!(
 
     MOUSE_OVER,
     HOVERING |= MOUSE_OVER,
+
+    GAINED_KEYBOARD_FOCUS,
 );
 
 macro_rules! sig_fn {
@@ -1044,6 +1050,7 @@ sig_fn!(double_clicked => DOUBLE_CLICKED_LEFT);
 sig_fn!(double_pressed => DOUBLE_PRESSED_LEFT);
 sig_fn!(dragging => DRAGGING_LEFT);
 sig_fn!(released => RELEASED_LEFT);
+sig_fn!(keyboard_focused => GAINED_KEYBOARD_FOCUS);
 
 // impl fmt::Display for Signal {
 //     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

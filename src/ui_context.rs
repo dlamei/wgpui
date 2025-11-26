@@ -122,10 +122,15 @@ pub struct Context {
     pub text_input_states: IdMap<TextInputState>,
 
     // TODO[CHECK]: still needed? how to use exactly
-    pub prev_item_data: PrevItemData,
+    // pub prev_item_data: PrevItemData,
     pub panel_action: PanelAction,
     // pub resizing_window_dir: Option<Dir>,
     pub next: NextPanelData,
+
+    pub prev_item_id: Id,
+    pub kb_focus_next_item: bool,
+    pub kb_focus_prev_item: bool,
+    pub kb_focus_item_id: Id,
 
     // TODO[CHECK]: when do we set the panels and item ids?
     // TODO[BUG]: if cursor quickly exists window hot_id may not be set to NULL
@@ -244,7 +249,7 @@ impl Context {
             text_input_states: IdMap::new(),
 
             current_panel_id: Id::NULL,
-            prev_item_data: PrevItemData::new(),
+            // prev_item_data: PrevItemData::new(),
 
             hot_id: Id::NULL,
             hot_panel_id: Id::NULL,
@@ -265,6 +270,10 @@ impl Context {
             expect_drag: false,
             // resizing_window_dir: None,
             next: NextPanelData::default(),
+            kb_focus_next_item: false,
+            kb_focus_prev_item: false,
+            kb_focus_item_id: Id::NULL,
+            prev_item_id: Id::NULL,
 
             draworder: Vec::new(),
             draw_wireframe: false,
@@ -397,6 +406,13 @@ impl Context {
             }
             PhysicalKey::Code(KeyCode::KeyA) if ctrl => {
                 input.select_all();
+            }
+            PhysicalKey::Code(KeyCode::Tab) if !self.active_id.is_null() => {
+                if shift {
+                    self.kb_focus_prev_item = true;
+                } else {
+                    self.kb_focus_next_item = true;
+                }
             }
             PhysicalKey::Code(KeyCode::Delete) => input.delete(),
             PhysicalKey::Code(KeyCode::Enter) => {
@@ -1236,7 +1252,7 @@ impl Context {
 
             // start drawing content
             self.set_cursor_pos(self.content_start_pos());
-            self.prev_item_data.reset();
+            // self.prev_item_data.reset();
         }
 
         // draw panel outline last
@@ -1312,7 +1328,7 @@ impl Context {
         let scrollbar_rect = Rect::from_min_max(min, max);
 
         // handle panel action
-        let sig = self.register_rect(scroll_id, scrollbar_rect);
+        let sig = self.reg_item_active_on_press(scroll_id, scrollbar_rect);
         let p = &self.panels[self.current_panel_id];
         if (sig.pressed() || sig.dragging()) && self.panel_action.is_none() {
             if sig.pressed() && !sig.dragging() {
@@ -1421,7 +1437,7 @@ impl Context {
         self.draw(title_text.draw_rects(panel_pos + pad, self.style.text_col()));
 
         // Register titlebar interaction area
-        let tb_sig = self.register_rect(
+        let tb_sig = self.reg_item_active_on_press(
             p_id,
             Rect::from_min_size(panel_pos, Vec2::new(panel_size.x, titlebar_height)),
         );
@@ -1442,7 +1458,7 @@ impl Context {
         if minimize {
             let min_id = self.gen_id("##_MIN_ICON");
             let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
-            min_sig = self.register_rect(min_id, Rect::from_min_size(btn_pos, btn_size));
+            min_sig = self.reg_item_active_on_release(min_id, Rect::from_min_size(btn_pos, btn_size));
 
             let color = if min_sig.hovering() {
                 self.style.btn_hover()
@@ -1461,7 +1477,7 @@ impl Context {
         if maximize {
             let max_id = self.gen_id("##_MAX_ICON");
             let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
-            max_sig = self.register_rect(max_id, Rect::from_min_size(btn_pos, btn_size));
+            max_sig = self.reg_item_active_on_release(max_id, Rect::from_min_size(btn_pos, btn_size));
 
             let color = if max_sig.hovering() {
                 self.style.btn_hover()
@@ -1484,7 +1500,7 @@ impl Context {
         if close {
             let close_id = self.gen_id("##_CLOSE_ICON");
             let btn_pos = panel_pos + Vec2::new(btn_x, btn_y);
-            close_sig = self.register_rect(close_id, Rect::from_min_size(btn_pos, btn_size));
+            close_sig = self.reg_item_active_on_release(close_id, Rect::from_min_size(btn_pos, btn_size));
 
             let color = if close_sig.hovering() {
                 self.style.red()
@@ -2275,7 +2291,8 @@ impl Context {
         //     return sig;
         // }
 
-        if sig.hovering() && self.active_id == id {
+        // if sig.hovering() && self.active_id == id {
+        if sig.hovering() {
             if self.mouse.just_pressed(Btn::Left) {
                 sig |= Signal::JUST_PRESSED_LEFT;
             }
@@ -2445,7 +2462,7 @@ impl Context {
     }
 
     pub fn new_line(&mut self) {
-        self.place_item(Id::NULL, Vec2::new(0.0, self.style.line_height()));
+        self.place_item(Vec2::new(0.0, self.style.line_height()));
     }
 
     pub fn same_line(&self) {
@@ -2474,7 +2491,7 @@ impl Context {
 
     // based on: https://github.com/ocornut/imgui/blob/3dafd9e898290ca890c29a379188be9e53b88537/imgui.cpp#L11183
     // TODO[NOTE]: what do we do with layout? now that we have same_line
-    pub fn place_item(&mut self, id: Id, size: Vec2) -> Rect {
+    pub fn place_item(&mut self, size: Vec2) -> Rect {
         let p = self.get_current_panel();
         // let rect = Rect::from_min_size(p.cursor_pos().round() + p.scroll, size.round());
         let rect = Rect::from_min_size(p.cursor_pos().round(), size.round());
@@ -2501,43 +2518,43 @@ impl Context {
         c.prev_line_height = line_height;
         c.line_height = 0.0;
         c.is_same_line = false;
-        drop(c);
+        // drop(c);
 
-        if !id.is_null() {
-            self.prev_item_data.reset();
-            self.prev_item_data.id = id;
-            self.prev_item_data.rect = rect;
+        // if !id.is_null() {
+        //     self.prev_item_data.reset();
+        //     self.prev_item_data.id = id;
+        //     self.prev_item_data.rect = rect;
 
-            let Some(crect) = rect.clip(clip_rect) else {
-                self.prev_item_data.is_hidden = true;
-                return rect;
-            };
+        //     let Some(crect) = rect.clip(clip_rect) else {
+        //         self.prev_item_data.is_hidden = true;
+        //         return rect;
+        //     };
 
-            if self.draw_item_outline {
-                // self.draw_over(|list| {
-                self.draw_over(
-                    rect.draw_rect()
-                        .outline(Outline::outer(RGBA::PASTEL_YELLOW, 1.5)),
-                );
-                // list.add_rect_outline(
-                //     rect.min,
-                //     rect.max,
-                //     Outline::outer(RGBA::PASTEL_YELLOW, 1.5),
-                // );
-                if let Some(crect) = rect.clip(clip_rect) {
-                    self.draw_over(crect.draw_rect().outline(Outline::outer(RGBA::YELLOW, 1.5)));
-                    // list.add_rect_outline(
-                    //     crect.min,
-                    //     crect.max,
-                    //     Outline::outer(RGBA::YELLOW, 1.5),
-                    // );
-                }
-                // });
-            }
+        //     if self.draw_item_outline {
+        //         // self.draw_over(|list| {
+        //         self.draw_over(
+        //             rect.draw_rect()
+        //                 .outline(Outline::outer(RGBA::PASTEL_YELLOW, 1.5)),
+        //         );
+        //         // list.add_rect_outline(
+        //         //     rect.min,
+        //         //     rect.max,
+        //         //     Outline::outer(RGBA::PASTEL_YELLOW, 1.5),
+        //         // );
+        //         if let Some(crect) = rect.clip(clip_rect) {
+        //             self.draw_over(crect.draw_rect().outline(Outline::outer(RGBA::YELLOW, 1.5)));
+        //             // list.add_rect_outline(
+        //             //     crect.min,
+        //             //     crect.max,
+        //             //     Outline::outer(RGBA::YELLOW, 1.5),
+        //             // );
+        //         }
+        //         // });
+        //     }
 
-            self.prev_item_data.clipped_rect = crect;
-            self.prev_item_data.is_clipped = !clip_rect.contains_rect(rect);
-        }
+        //     self.prev_item_data.clipped_rect = crect;
+        //     self.prev_item_data.is_clipped = !clip_rect.contains_rect(rect);
+        // }
 
         rect
     }
@@ -2545,6 +2562,7 @@ impl Context {
     pub fn update_hot_id(&mut self, id: Id, bb: Rect, flags: ItemFlags) {
         let is_topmost =
             self.prev_hot_panel_id == self.current_panel_id || self.prev_hot_panel_id.is_null();
+
         if bb.contains(self.mouse.pos)
             && !id.is_null()
             && self.panel_action.is_none()
@@ -2556,9 +2574,9 @@ impl Context {
 
             // if self.mouse.pressed(MouseBtn::Left) && self.active_id != id
             if self.active_id != id {
-                if flags.has(ItemFlags::ACTIVATE_ON_RELEASE) && self.mouse.released(MouseBtn::Left)
-                    || !flags.has(ItemFlags::ACTIVATE_ON_RELEASE)
-                        && self.mouse.pressed(MouseBtn::Left)
+                if flags.has(ItemFlags::SET_ACTIVE_ON_RELEASE) && self.mouse.released(MouseBtn::Left)
+                    || flags.has(ItemFlags::SET_ACTIVE_ON_PRESS) && self.mouse.pressed(MouseBtn::Left)
+                    || flags.has(ItemFlags::SET_ACTIVE_ON_CLICK) && self.mouse.clicked(MouseBtn::Left)
                 {
                     self.active_id = id;
                     self.active_id_changed = true;
@@ -2573,35 +2591,84 @@ impl Context {
         }
     }
 
-    pub fn register_rect(&mut self, id: Id, rect: Rect) -> Signal {
-        let p = &self.panels[self.current_panel_id];
-        let clip_rect = p.current_clip_rect();
-        if let Some(clip) = clip_rect.clip(rect) {
-            self.update_hot_id(id, clip, ItemFlags::NONE);
-        }
-        self.get_item_signal(id, rect)
+    // pub fn register_rect(&mut self, id: Id, rect: Rect) -> Signal {
+    //     let p = &self.panels[self.current_panel_id];
+    //     let clip_rect = p.current_clip_rect();
+    //     if let Some(clip) = clip_rect.clip(rect) {
+    //         self.update_hot_id(id, clip, ItemFlags::NONE);
+    //     }
+    //     self.get_item_signal(id, rect)
+    // }
+
+    pub fn reg_item_active_on_press(&mut self, id: Id, bb: Rect) -> Signal {
+        self.reg_item_ex(id, bb, ItemFlags::SET_ACTIVE_ON_PRESS)
     }
 
-    pub fn register_item(&mut self, id: Id) -> Signal {
-        self.register_item_ex(id, ItemFlags::NONE)
+    pub fn reg_item_active_on_release(&mut self, id: Id, bb: Rect) -> Signal {
+        self.reg_item_ex(id, bb, ItemFlags::SET_ACTIVE_ON_RELEASE)
+    }
+
+    pub fn reg_item_active_on_click(&mut self, id: Id, bb: Rect) -> Signal {
+        self.reg_item_ex(id, bb, ItemFlags::SET_ACTIVE_ON_CLICK)
+    }
+
+    pub fn reg_item_(&mut self, id: Id, bb: Rect) -> Signal {
+        self.reg_item_ex(id, bb, ItemFlags::NONE)
     }
 
     /// "registers" the item, i.e. potentially sets hot_id and returns the item signals
     ///
-    /// assumes the item to be a rect at position of the cursor with given size
-    pub fn register_item_ex(&mut self, id: Id, flags: ItemFlags) -> Signal {
+    pub fn reg_item_ex(&mut self, id: Id, bb: Rect, flags: ItemFlags) -> Signal {
+        let p = self.get_current_panel();
+        let clip_rect = p.current_clip_rect();
+
+        let is_hidden = bb.clip(clip_rect).is_none();
+
+        if self.draw_item_outline {
+            // self.draw_over(|list| {
+            self.draw_over(
+                bb.draw_rect()
+                .outline(Outline::outer(RGBA::PASTEL_YELLOW, 1.5)),
+            );
+
+            if let Some(c_bb) = bb.clip(clip_rect) {
+                self.draw_over(c_bb.draw_rect().outline(Outline::outer(RGBA::YELLOW, 1.5)));
+            }
+        }
+
         if id.is_null() {
             return Signal::NONE;
         }
 
-        assert!(self.prev_item_data.id == id);
+
+        if self.kb_focus_next_item && self.prev_item_id == self.active_id {
+            self.kb_focus_item_id = id;
+            self.kb_focus_next_item = false;
+            self.active_id_changed = true;
+        }
+
+        if self.kb_focus_prev_item && self.active_id == id {
+            // self.active_id = self.prev_item_id;
+            self.kb_focus_item_id = self.prev_item_id;
+            self.kb_focus_prev_item = false;
+            self.active_id_changed = true;
+        }
+
+        let mut signal = Signal::NONE;
+        if self.kb_focus_item_id == id && self.active_id != id {
+            signal |= Signal::GAINED_KEYBOARD_FOCUS;
+            self.kb_focus_item_id = Id::NULL;
+        }
+
+        // assert!(self.prev_item_data.id == id);
         // let p = self.get_current_panel();
-        if self.prev_item_data.is_hidden && self.active_id != id {
+        if is_hidden && self.active_id != id {
             return Signal::NONE;
         }
 
-        let clip_rect = self.prev_item_data.clipped_rect;
-        self.update_hot_id(id, clip_rect, flags);
+        let c_bb = bb.clip(clip_rect).unwrap();
+        self.update_hot_id(id, c_bb, flags);
+
 
         // if clip_rect.contains(self.mouse.pos) {
         //     // let is_over = if let Some(hot) = self.get_hot_panel() {
@@ -2623,7 +2690,10 @@ impl Context {
         //     }
         // }
 
-        self.get_item_signal(id, clip_rect)
+        signal |= self.get_item_signal(id, c_bb);
+        self.prev_item_id = id;
+
+        signal
     }
 
     pub fn create_panel(&mut self, name: impl Into<String>, id: Id) {
@@ -2943,7 +3013,7 @@ impl Context {
 
         let parent = self.current_panel_id;
         assert!(self.panels[parent].child_id == child_id);
-        self.place_item(Id::NULL, size);
+        self.place_item(size);
     }
 
     pub fn init(&mut self) {
@@ -2962,6 +3032,10 @@ impl Context {
         }
         // reset hovered tabbar each frame
         self.hot_tabbar_id = Id::NULL;
+
+        if self.active_id == Id::NULL {
+            self.kb_focus_next_item = false;
+        }
 
         // if !self.window.is_decorated() {
         self.next.pos = Vec2::ZERO;
