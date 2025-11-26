@@ -119,7 +119,7 @@ pub struct Context {
     pub tabbar_stack: Vec<Id>,
 
 
-    pub text_input_states: IdMap<TextInputState>,
+    // pub text_input_states: IdMap<TextInputState>,
 
     // TODO[CHECK]: still needed? how to use exactly
     // pub prev_item_data: PrevItemData,
@@ -246,7 +246,7 @@ impl Context {
             // tabbars: IdMap::new(),
             tabbar_count: 0,
             tabbar_stack: Vec::new(),
-            text_input_states: IdMap::new(),
+            // text_input_states: IdMap::new(),
 
             current_panel_id: Id::NULL,
             // prev_item_data: PrevItemData::new(),
@@ -353,14 +353,9 @@ impl Context {
     }
 
     pub fn on_key_event(&mut self, key: &winit::event::KeyEvent) {
-        use ctext::{Action, Edit, Motion, Selection};
         use winit::{
             event::ElementState,
             keyboard::{KeyCode, PhysicalKey},
-        };
-
-        let Some(input) = self.text_input_states.get_mut(self.active_id) else {
-            return;
         };
 
         if !matches!(key.state, ElementState::Pressed) {
@@ -370,43 +365,7 @@ impl Context {
         let ctrl = self.modifiers.control_key();
         let shift = self.modifiers.shift_key();
 
-        // let sys = &mut self.font_table.borrow_mut().sys;
-
         match key.physical_key {
-            PhysicalKey::Code(KeyCode::ArrowRight) => {
-                input.move_cursor_right(&self.modifiers);
-            }
-            PhysicalKey::Code(KeyCode::ArrowLeft) => {
-                input.move_cursor_left(&self.modifiers);
-            }
-            PhysicalKey::Code(KeyCode::ArrowDown) => {
-                input.move_cursor_down(&self.modifiers);
-            }
-            PhysicalKey::Code(KeyCode::ArrowUp) => {
-                input.move_cursor_up(&self.modifiers);
-            }
-            PhysicalKey::Code(KeyCode::Backspace) => {
-                input.backspace(&self.modifiers);
-            }
-            PhysicalKey::Code(KeyCode::KeyV) if ctrl => {
-                if let Some(text) = self.clipboard.get_text() {
-                    input.paste(&text);
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyC) if ctrl => {
-                if let Some(text) = input.copy_selection() {
-                    self.clipboard.set_text(&text);
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyX) if ctrl => {
-                if let Some(text) = input.copy_selection() {
-                    self.clipboard.set_text(&text);
-                    input.delete_selection();
-                }
-            }
-            PhysicalKey::Code(KeyCode::KeyA) if ctrl => {
-                input.select_all();
-            }
             PhysicalKey::Code(KeyCode::Tab) if !self.active_id.is_null() => {
                 if shift {
                     self.kb_focus_prev_item = true;
@@ -414,17 +373,57 @@ impl Context {
                     self.kb_focus_next_item = true;
                 }
             }
-            PhysicalKey::Code(KeyCode::Delete) => input.delete(),
-            PhysicalKey::Code(KeyCode::Enter) => {
-                if input.multiline {
-                    input.enter()
-                } else {
-                    self.active_id = Id::NULL;
+            _ => (),
+        }
+
+        if let Some(input) = self.widget_data.get_mut::<TextInputState>(&self.active_id) {
+            match key.physical_key {
+                PhysicalKey::Code(KeyCode::ArrowRight) => {
+                    input.move_cursor_right(&self.modifiers);
                 }
-            }
-            _ => {
-                if let Some(text) = &key.text {
-                    input.paste(&text);
+                PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                    input.move_cursor_left(&self.modifiers);
+                }
+                PhysicalKey::Code(KeyCode::ArrowDown) => {
+                    input.move_cursor_down(&self.modifiers);
+                }
+                PhysicalKey::Code(KeyCode::ArrowUp) => {
+                    input.move_cursor_up(&self.modifiers);
+                }
+                PhysicalKey::Code(KeyCode::Backspace) => {
+                    input.backspace(&self.modifiers);
+                }
+                PhysicalKey::Code(KeyCode::KeyV) if ctrl => {
+                    if let Some(text) = self.clipboard.get_text() {
+                        input.paste(&text);
+                    }
+                }
+                PhysicalKey::Code(KeyCode::KeyC) if ctrl => {
+                    if let Some(text) = input.copy_selection() {
+                        self.clipboard.set_text(&text);
+                    }
+                }
+                PhysicalKey::Code(KeyCode::KeyX) if ctrl => {
+                    if let Some(text) = input.copy_selection() {
+                        self.clipboard.set_text(&text);
+                        input.delete_selection();
+                    }
+                }
+                PhysicalKey::Code(KeyCode::KeyA) if ctrl => {
+                    input.select_all();
+                }
+                PhysicalKey::Code(KeyCode::Delete) => input.delete(),
+                PhysicalKey::Code(KeyCode::Enter) => {
+                    if input.multiline {
+                        input.enter()
+                    } else {
+                        self.active_id = Id::NULL;
+                    }
+                }
+                _ => {
+                    if let Some(text) = &key.text {
+                        input.paste(&text);
+                    }
                 }
             }
         }
@@ -2622,7 +2621,8 @@ impl Context {
         let p = self.get_current_panel();
         let clip_rect = p.current_clip_rect();
 
-        let is_hidden = bb.clip(clip_rect).is_none();
+        let c_bb = bb.clip(clip_rect);
+        let is_hidden = c_bb.is_none();
 
         if self.draw_item_outline {
             // self.draw_over(|list| {
@@ -2631,7 +2631,7 @@ impl Context {
                 .outline(Outline::outer(RGBA::PASTEL_YELLOW, 1.5)),
             );
 
-            if let Some(c_bb) = bb.clip(clip_rect) {
+            if let Some(c_bb) = c_bb {
                 self.draw_over(c_bb.draw_rect().outline(Outline::outer(RGBA::YELLOW, 1.5)));
             }
         }
@@ -2666,31 +2666,11 @@ impl Context {
             return Signal::NONE;
         }
 
-        let c_bb = bb.clip(clip_rect).unwrap();
-        self.update_hot_id(id, c_bb, flags);
+        if let Some(c_bb) = c_bb {
+            self.update_hot_id(id, c_bb, flags);
+            signal |= self.get_item_signal(id, c_bb);
+        }
 
-
-        // if clip_rect.contains(self.mouse.pos) {
-        //     // let is_over = if let Some(hot) = self.get_hot_panel() {
-        //     //     hot.draw_order > draw_order
-        //     // } else {
-        //     //     true
-        //     // };
-        //     // if is_over
-
-        //     // TODO[CHECK]: is this correct?, maybe use draw order?
-        //     // TODO[CHECK]: use prev_hot_panel_id because if we used hot_panel_id
-        //     // we would potentially return multiple hovering signals per frame?
-        //     // maybe instead use some prev_hot_id in get_item_signals?
-        //     if self.prev_hot_panel_id == self.current_panel_id
-        //         || self.prev_hot_panel_id.is_null()
-        //         || self.panel_action.is_none()
-        //     {
-        //         self.hot_id = id;
-        //     }
-        // }
-
-        signal |= self.get_item_signal(id, c_bb);
         self.prev_item_id = id;
 
         signal
@@ -3219,7 +3199,7 @@ impl Context {
         }
 
         let avail = self.available_content();
-        self.text_input_ex("this is a text input field", flags);
+        self.input_text_ex("text field", "this is a text input field", flags);
         self.end_child();
 
         self.move_down(10.0);
@@ -3299,10 +3279,11 @@ impl Context {
 
         if self.tabitem("Debug") {
             if self.button("reset docktree") {
-                for (_, p) in &mut self.panels {
-                    p.dock_id = Id::NULL;
-                }
-                self.docktree = DockTree::new();
+                self.reset_docktree();
+            }
+
+            if self.button("reset style") {
+                self.style = dark_theme();
             }
 
             let mut tmp = self.draw_wireframe;

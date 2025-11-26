@@ -39,6 +39,18 @@ pub const fn rand_f32() -> f32 {
     }
 }
 
+pub const fn rand_u8() -> u8 {
+    (rand_f32() * 255.0) as u8
+}
+
+pub const fn rand_u32() -> u32 {
+    static mut SEED: u32 = 987654321;
+    unsafe {
+        SEED = SEED.wrapping_mul(1664525).wrapping_add(1013904223);
+        SEED
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct RGBA {
@@ -1104,25 +1116,30 @@ macro_rules! stacked_fields_struct {
 pub(crate) use stacked_fields_struct;
 
 pub struct DataMap<K> {
-    data: HashMap<K, Box<dyn std::any::Any>>,
+    data: HashMap<u64, Box<dyn std::any::Any>>,
+    _key_ty: std::marker::PhantomData<K>,
 }
 
 impl<K: Eq + hash::Hash> DataMap<K> {
     pub fn new() -> Self {
         Self {
             data: HashMap::new(),
+            _key_ty: std::marker::PhantomData,
         }
     }
 
     pub fn get<T: 'static>(&self, key: &K) -> Option<&T> {
-        self.data.get(key)?.downcast_ref::<T>()
+        let key = Self::key_hash::<T>(key);
+        self.data.get(&key)?.downcast_ref::<T>()
     }
 
     pub fn get_mut<T: 'static>(&mut self, key: &K) -> Option<&mut T> {
-        self.data.get_mut(key)?.downcast_mut::<T>()
+        let key = Self::key_hash::<T>(key);
+        self.data.get_mut(&key)?.downcast_mut::<T>()
     }
 
     pub fn insert<T: 'static>(&mut self, key: K, value: T) {
+        let key = Self::key_hash::<T>(&key);
         self.data.insert(key, Box::new(value));
     }
 
@@ -1130,6 +1147,7 @@ impl<K: Eq + hash::Hash> DataMap<K> {
     where
         K: Clone,
     {
+        let key = Self::key_hash::<T>(&key);
         self.data
             .entry(key)
             .or_insert_with(|| Box::new(value))
@@ -1138,6 +1156,7 @@ impl<K: Eq + hash::Hash> DataMap<K> {
     }
 
     pub fn get_or_insert_with<T: 'static, F: FnOnce() -> T>(&mut self, key: K, f: F) -> &mut T {
+        let key = Self::key_hash::<T>(&key);
         self.data
             .entry(key)
             .or_insert_with(|| Box::new(f()))
@@ -1145,16 +1164,28 @@ impl<K: Eq + hash::Hash> DataMap<K> {
             .expect("Type mismatch in TypeMap")
     }
 
-    pub fn remove(&mut self, key: &K) -> bool {
-        self.data.remove(key).is_some()
+    pub fn remove<T: 'static>(&mut self, key: &K) -> bool {
+        let key = Self::key_hash::<T>(key);
+        self.data.remove(&key).is_some()
     }
 
-    pub fn contains_key(&self, key: &K) -> bool {
-        self.data.contains_key(key)
+    pub fn contains_key<T: 'static>(&self, key: &K) -> bool {
+        let key = Self::key_hash::<T>(key);
+        self.data.contains_key(&key)
     }
 
     pub fn clear(&mut self) {
         self.data.clear();
+    }
+
+    fn key_hash<T: 'static>(key: &K) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let type_id = std::any::TypeId::of::<T>();
+
+        let mut hasher = ahash::AHasher::new_with_keys(0, 0);
+        type_id.hash(&mut hasher);
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 }
 

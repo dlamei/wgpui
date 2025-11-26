@@ -612,13 +612,22 @@ pub struct TabItem {
 
 #[derive(Debug, Clone)]
 pub struct TextInputState {
+    pub id: Id,
     pub edit: ctext::Editor<'static>,
     pub fonts: FontTable,
     pub multiline: bool,
 }
 
+impl std::hash::Hash for TextInputState {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.fonts.hash(state);
+        self.multiline.hash(state);
+        self.id.hash(state);
+    }
+}
+
 impl TextInputState {
-    pub fn new(mut fonts: FontTable, text: TextItem, multiline: bool) -> Self {
+    pub fn new(id: Id, mut fonts: FontTable, text: TextItem, multiline: bool) -> Self {
         let mut buffer = ctext::Buffer::new(
             &mut fonts.sys(),
             ctext::Metrics {
@@ -638,6 +647,7 @@ impl TextInputState {
         let edit = ctext::Editor::new(buffer);
 
         Self {
+            id,
             edit,
             fonts,
             multiline,
@@ -2529,6 +2539,12 @@ pub struct TextItem {
 pub struct FontTable {
     // pub id_to_name: Vec<(FontId, String)>,
     pub sys: Rc<RefCell<ctext::FontSystem>>,
+}
+
+impl std::hash::Hash for FontTable {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.sys).hash(state);
+    }
 }
 
 impl FontTable {

@@ -117,6 +117,15 @@ impl Texture {
         )
     }
 
+    pub fn random(wgpu: &WGPU, width: u32, height: u32, usage: wgpu::TextureUsages) -> Self {
+        // use core::rand_u8
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        for byte in &mut data {
+            *byte = core::rand_u8();
+        }
+        Self::cretae_with_usage(wgpu, width, height, usage, &data)
+    }
+
     pub fn width(&self) -> u32 {
         self.raw().width()
     }
@@ -128,6 +137,7 @@ impl Texture {
     pub fn size(&self) -> Vec2 {
         Vec2::new(self.width() as f32, self.height() as f32)
     }
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -283,7 +283,7 @@ impl ui::Context {
         let rect = self.place_item(Vec2::new(width, height));
 
         // If there's an active text editor for this item we are in edit mode
-        let mut is_editing = self.text_input_states.contains_id(id);
+        let mut is_editing = self.widget_data.contains_key::<TextInputState>(&id);
 
         let sig = self.reg_item_active_on_press(id, rect);
 
@@ -291,8 +291,8 @@ impl ui::Context {
             let s = format!("{}", *val);
             let item = ui::TextItem::new(s, self.style.text_size(), 1.0, "Inter");
             self.active_id = id;
-            self.text_input_states.insert(id, TextInputState::new(self.font_table.clone(), item, false));
-            self.text_input_states[id].select_all();
+            self.widget_data.insert(id, TextInputState::new(id, self.font_table.clone(), item, false));
+            self.widget_data.get_mut::<TextInputState>(&id).unwrap().select_all();
             is_editing = true;
         }
 
@@ -337,7 +337,7 @@ impl ui::Context {
         if is_editing {
             // let sig2 = self.reg_item(id, rect);
 
-            let input = &mut self.text_input_states[id];
+            let input = &mut self.widget_data.get_mut::<TextInputState>(&id).unwrap();
             input.edit.shape_as_needed(&mut self.font_table.sys(), true);
             let layout = input.layout_text(self.glyph_cache.get_mut(), &mut self.wgpu);
             let dim = layout.size();
@@ -372,11 +372,11 @@ impl ui::Context {
 
             // Commit on focus loss
             if self.active_id != id {
-                let new_text = self.text_input_states[id].copy_all();
+                let new_text = self.widget_data.get::<TextInputState>(&id).unwrap().copy_all();
                 if let Ok(v) = new_text.trim().parse::<f32>() {
                     *val = v.clamp(min, max);
                 }
-                self.text_input_states.remove(id);
+                self.widget_data.remove::<TextInputState>(&id);
             }
         } else {
             // Display centered numeric value when not editing
@@ -489,30 +489,29 @@ impl ui::Context {
         // self.draw(|list| list.add_text(rect.min, &layout, self.style.text_col()));
     }
 
-    pub fn text_input(&mut self, text: &str) {
-        self.text_input_ex(text, TextInputFlags::NONE);
+    pub fn input_text(&mut self, label: &str, default_text: &str) {
+        self.input_text_ex(label, default_text, TextInputFlags::NONE);
     }
 
-    pub fn text_input_ex(&mut self, text: &str, flags: TextInputFlags) {
-        use ctext::{Action, Edit, Motion};
+    pub fn input_text_ex(&mut self, label: &str, default_text: &str, flags: TextInputFlags) {
+        use ctext::Edit;
 
         let text_height = self.style.text_size();
         let line_height = self.style.line_height().max(text_height);
         let vertical_offset = (line_height - text_height) / 2.0;
         self.move_down(vertical_offset);
 
-        let panel = self.get_current_panel();
-        let id = panel.gen_local_id(text);
+        let id = self.gen_id(label);
 
-        if !self.text_input_states.contains_id(id) {
-            let item = ui::TextItem::new(text.to_string(), self.style.text_size(), 1.0, "Inter");
-            self.text_input_states.insert(
+        if !self.widget_data.contains_key::<TextInputState>(&id) {
+            let item = ui::TextItem::new(default_text.to_string(), self.style.text_size(), 1.0, "Inter");
+            self.widget_data.insert(
                 id,
-                TextInputState::new(self.font_table.clone(), item, false),
+                TextInputState::new(id, self.font_table.clone(), item, false),
             );
         }
 
-        let input = &mut self.text_input_states[id];
+        let input = &mut self.widget_data.get_mut::<TextInputState>(&id).unwrap();
         input.multiline = flags.has(TextInputFlags::MULTILINE);
 
         input.edit.shape_as_needed(&mut self.font_table.sys(), true);
@@ -546,25 +545,26 @@ impl ui::Context {
 
         let relative_pos = self.mouse.pos - rect.min;
 
+        let input = &mut self.widget_data.get_mut::<TextInputState>(&id).unwrap();
         if sig.double_pressed() {
             // TODO[BUG]: only works when double pressing and dragging afterwards, if holding the
             // double press we loose word selection mode
-            self.text_input_states[id].mouse_double_clicked(relative_pos);
+            input.mouse_double_clicked(relative_pos);
         } else if sig.dragging() {
-            self.text_input_states[id].mouse_dragging(relative_pos);
+            input.mouse_dragging(relative_pos);
         } else if sig.pressed() {
-            self.text_input_states[id].mouse_pressed(relative_pos);
+            input.mouse_pressed(relative_pos);
         }
 
         if self.active_id != id {
-            self.text_input_states[id].deselect_all();
+            input.deselect_all();
         }
 
         if self.active_id_changed
             && self.active_id == id
             && flags.has(TextInputFlags::SELECT_ON_ACTIVE)
         {
-            self.text_input_states[id].select_all();
+            input.select_all();
         }
 
         let text_pos =
@@ -589,7 +589,7 @@ impl ui::Context {
         let selection_color = self.style.btn_hover();
         let selected_text_color = self.style.text_col();
 
-        let input = &mut self.text_input_states[id];
+        let input = &mut self.widget_data.get_mut::<TextInputState>(&id).unwrap();
 
         let mut glyphs = Vec::new();
         let mut selection_rects = Vec::new();
