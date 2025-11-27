@@ -3423,10 +3423,7 @@ impl gpu::ShaderHandle for UiShader {
             @fragment
             fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
                 
-                if in.tex == 0 {
-                    return in.color;
-                }
-
+                var col: vec4<f32> = in.color;
                 @rust texture_fetch;
             }
             "#;
@@ -3482,15 +3479,23 @@ impl gpu::ShaderHandle for UiShader {
                 @group(0) @binding({})
                 var tex{}: texture_2d<f32>;
             ", i + 2, i + 1));
-
-            rust_texture_fetch.push_str(&format!("
-                else if in.tex == {}u {{
-                    let c{} = textureSample(tex{}, samp, in.uv) * in.color;
-                    return c{};
-                }}", i + 1, i + 1, i + 1, i + 1));
+            // rust_texture_fetch.push_str(&format!("
+            //     else if in.tex == {}u {{
+            //         let c{} = textureSample(tex{}, samp, in.uv) * in.color;
+            //         return c{};
+            //     }}", i + 1, i + 1, i + 1, i + 1));
         }
 
-        rust_texture_fetch.push_str("else { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }");
+        for i in 0..MAX_N_TEXTURES_PER_DRAW_CALL {
+            rust_texture_fetch.push_str(&format!("let c{} = textureSample(tex{}, samp, in.uv) * in.color;\n", i + 1, i + 1));
+        }
+
+        for i in 0..MAX_N_TEXTURES_PER_DRAW_CALL {
+            rust_texture_fetch.push_str(&format!("col = select(col, c{}, in.tex == {}u);\n", i + 1, i + 1));
+        }
+
+        rust_texture_fetch.push_str("return col;\n");
+        // rust_texture_fetch.push_str("else { return vec4<f32>(1.0, 0.0, 1.0, 1.0); }");
 
         shader_src = shader_src.replace("@rust texture_bindings;", &rust_texture_bindings);
         shader_src = shader_src.replace("@rust texture_fetch;", &rust_texture_fetch);
