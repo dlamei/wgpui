@@ -4,7 +4,7 @@
 
 [**Live Example**](https://atls.studio)
 
-WGPUI is a lightweight UI library for **Rust** built on **WGPU**, with an API intentionally familiar to users of **Dear ImGui**.  
+WGPUI is a lightweight UI library for **Rust** built on **WGPU**, with an API familiar to users of **Dear ImGui**.  
 Designed to stay small, clear, and easy to customize.
 
 ---
