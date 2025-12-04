@@ -1,7 +1,30 @@
 # WGPUI
 
-## Simple ImGui for Rust + WGPU
+### Simple ImGui-style UI for Rust + WGPU
 
-[Demo](https://dlamei.github.io/wgpui/)
+[**Live Example**](https://atls.studio)
 
-heavy inspiration from Dear ImGui
+WGPUI is a lightweight UI library for **Rust** built on **WGPU**, with an API intentionally familiar to users of **Dear ImGui**.  
+Designed to stay small, clear, and easy to customize.
+
+---
+
+## Features
+
+- **Native + Web** builds  
+- **Docking**  
+- **Custom titlebars**  
+- **DearImGui-like API**, 
+- Easily styled and extended
+
+---
+
+## Status
+
+Functional and unstable
+
+---
+
+## License
+
+MIT
